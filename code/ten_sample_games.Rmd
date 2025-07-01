@@ -1,0 +1,676 @@
+---
+title: "10 plays"
+author: "Maximilian J. Gebauer"
+date: "2025-06-19"
+output: html_document
+---
+
+```{r Setup, include=FALSE, results='hide', warning=FALSE}
+knitr::opts_chunk$set(echo = T, fig.width=8, fig.height=4)
+options(scipen = 0, digits = 3)  # controls base R output
+
+# Package setup
+if(!require("pacman")) install.packages("pacman")
+
+pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
+               GGally, RColorBrewer, ggsci, plotROC, usmap,
+               plotly, ggpubr, vistime, coefplot, skimr, car, ggrepel, slider, lubridate,
+               tidymodels,ranger,vip,ggplot2, tune,dials,pdp, purrr, stringr, lmtest,
+               sandwich, clue)
+```
+
+```{r}
+ten_games <- read.csv("/Users/maximiliangebauer/Downloads/10_sample_games.csv")
+```
+
+```{r}
+players <- read.csv("/Users/maximiliangebauer/Downloads/players-2.csv")
+```
+
+```{r}
+ten_games <- ten_games %>% select(-X)
+```
+
+
+```{r}
+skim(ten_games)
+```
+
+```{r}
+eng_start_summary <- ten_games %>%
+  select(event_types,event_player_name,opponent_player_name, play_uuid) %>%
+  unique() %>%
+  filter(event_types == "{\"\"Engagement Start\"\"}") %>% 
+  count(play_uuid, name = "n_eng_starts") %>% 
+  summarise(
+    plays_with_eng = n(), 
+    min   = min(n_eng_starts),
+    q1    = quantile(n_eng_starts, .25),
+    median= median(n_eng_starts),
+    mean  = mean(n_eng_starts),
+    q3    = quantile(n_eng_starts, .75),
+    max   = max(n_eng_starts),
+    sd    = sd(n_eng_starts)
+  )
+
+eng_start_summary
+
+eng_end_summary <- ten_games %>%
+  select(event_types,event_player_name,opponent_player_name, play_uuid) %>%
+  unique() %>%
+  filter(event_types == "{\"\"Engagement End\"\"}") %>% 
+  count(play_uuid, name = "n_eng_starts") %>%
+  summarise(
+    plays_with_eng = n(),
+    min   = min(n_eng_starts),
+    q1    = quantile(n_eng_starts, .25),
+    median= median(n_eng_starts),
+    mean  = mean(n_eng_starts),
+    q3    = quantile(n_eng_starts, .75),
+    max   = max(n_eng_starts),
+    sd    = sd(n_eng_starts)
+  )
+
+eng_end_summary
+```
+
+```{r}
+head(ten_games,100)
+sample_play <- ten_games %>%
+  filter(play_uuid=="f2378776-5b82-4680-8938-c7be4957072e")
+```
+
+```{r}
+sample_play$time_since_snap <- as.numeric(sample_play$time_since_snap)
+```
+
+
+
+```{r}
+snap_time <- sample_play %>%
+  filter(event_types == "{Snap}") %>%
+  pull(time_since_snap) %>%
+  unique()
+
+snap_x <- sample_play %>%
+  filter(event_types == "{Snap}") %>%
+  pull(event_ball_x) %>%
+  unique()
+
+snap_y <- sample_play  %>%
+  filter(event_types == "{Snap}") %>%
+  pull(event_ball_y) %>%
+  unique()
+
+pass_time <- sample_play %>%
+  filter(event_types == "{Pass}") %>%
+  pull(time_since_snap) %>%
+  unique()
+```
+
+```{r}
+sample_play %>%
+  filter((player_position=="Offensive Lineman" | opponent_position == "Offensive Lineman") & event_types %in%c("{\"\"Engagement Start\"\"}","{\"\"Engagement End\"\"}")) %>%
+  select(time_since_snap,opponent_player_name,event_player_name,player_position,opponent_position,event_types) %>%
+  unique()
+```
+
+```{r}
+snap_time <- sample_play %>%
+  filter(event_types == "{Snap}") %>%
+  pull(time_since_snap) %>%
+  unique()
+
+snap_x <- sample_play %>%
+  filter(event_types == "{Snap}") %>%
+  pull(event_ball_x) %>%
+  unique()
+
+snap_y <- sample_play  %>%
+  filter(event_types == "{Snap}") %>%
+  pull(event_ball_y) %>%
+  unique()
+
+pass_time <- sample_play %>%
+  filter(event_types == "{Pass}") %>%
+  pull(time_since_snap) %>%
+  unique()
+
+rushers <- sample_play %>%
+  filter(time_since_snap <= pass_time) %>%
+  group_by(freeze_frame_player) %>%
+  mutate(avg_x = mean(freeze_frame_x, na.rm=T)) %>%
+  filter(                                                   
+    any(freeze_frame_position %in% c("Defensive Lineman",
+                                     "Linebacker")) &      
+    any(avg_x < snap_x)                           
+  ) %>% 
+  ungroup() %>% 
+  distinct(freeze_frame_player) %>%
+  pull()
+```
+
+```{r}
+blockers <- sample_play %>% 
+  filter(freeze_frame_position == "Offensive Lineman") %>% 
+  pull(freeze_frame_player) %>% 
+  unique()
+
+pos_r <- sample_play %>% 
+  filter(freeze_frame_player %in% rushers) %>% 
+  transmute(time_since_snap,
+            rusher  = freeze_frame_player,
+            rx = freeze_frame_x,
+            ry = freeze_frame_y)
+
+pos_b <- sample_play %>% 
+  filter(freeze_frame_player %in% blockers) %>% 
+  transmute(time_since_snap,
+            blocker = freeze_frame_player,
+            bx = freeze_frame_x,
+            by = freeze_frame_y)
+
+
+pair_dist <- inner_join(pos_r, pos_b, by = "time_since_snap") %>% 
+  mutate(dist = sqrt((rx - bx)^2 + (ry - by)^2))
+
+
+dist_matrix <- pair_dist %>% 
+  group_by(rusher, blocker) %>% 
+  summarise(mean_dist = mean(dist), .groups = "drop") %>% 
+  pivot_wider(names_from  = blocker,
+              values_from = mean_dist)
+
+dist_matrix
+
+```
+
+
+
+```{r}
+rusher <- sample_play %>%
+  filter(freeze_frame_player %in% c("Rakeem Nunez-Roches", "Matt Ryan","Jalen Mayfield","Matt Hennessy", "Cam Gill", "Jake Matthews") & time_since_snap >= snap_time & time_since_snap <= pass_time)
+
+ggplot(rusher,aes(x=freeze_frame_x, y = freeze_frame_y, group = freeze_frame_player)) +
+  geom_point(aes(color=time_since_snap, shape=freeze_frame_player)) +
+  geom_point(x=snap_x, y=snap_y, color="yellow")
+
+rusher1 <- sample_play %>%
+  filter(freeze_frame_player %in% c("Patrick O'Connor", "Matt Ryan","Chris Lindstrom") & time_since_snap >= snap_time & time_since_snap <= pass_time)
+
+ggplot(rusher1,aes(x=freeze_frame_x, y = freeze_frame_y, group = freeze_frame_player)) +
+  geom_point(aes(color=time_since_snap, shape=freeze_frame_player)) +
+  geom_point(x=snap_x, y=snap_y, color="yellow")
+
+rusher2 <- sample_play %>%
+  filter(freeze_frame_player %in% c("Anthony Nelson", "Matt Ryan","Kaleb McGary") & time_since_snap >= snap_time & time_since_snap <= pass_time)
+
+ggplot(rusher2,aes(x=freeze_frame_x, y = freeze_frame_y, group = freeze_frame_player)) +
+  geom_point(aes(color=time_since_snap, shape=freeze_frame_player)) +
+  geom_point(x=snap_x, y=snap_y, color="yellow")
+```
+```{r}
+pair_cost <- pair_dist %>%
+  group_by(rusher, blocker) %>%         
+  summarise(cost = mean(dist), .groups = "drop")
+```
+
+```{r}
+cost_mat <- pair_cost %>% 
+  pivot_wider(names_from  = blocker,
+              values_from = cost) %>% 
+  column_to_rownames("rusher") %>% 
+  as.matrix()
+```
+
+```{r}
+assignment <- solve_LSAP(cost_mat)
+primary_map <- data.frame(
+  rusher  = rownames(cost_mat),
+  blocker = colnames(cost_mat)[assignment],
+  cost    = cost_mat[cbind(1:nrow(cost_mat), assignment)]
+)
+```
+
+```{r}
+primary_map
+```
+
+```{r}
+pair_dist %>%
+  filter(rusher=="Rakeem Nunez-Roches" & blocker == "Matt Hennessy")
+
+pair_dist %>%
+  filter(rusher=="Patrick O'Connor" & blocker == "Chris Lindstrom")
+```
+
+```{r}
+thresh <- 2.1
+
+double_team <- pair_cost %>% 
+  semi_join(primary_map, by = c("rusher", "blocker")) %>% 
+  right_join(pair_cost,  by = "rusher", suffix = c(".prim", "")) %>%
+  filter(blocker != blocker.prim, cost < thresh)
+
+double_team
+```
+
+```{r}
+sample_play
+```
+
+```{r}
+sample_play %>%
+  filter(event_types %in% c("{\"\"Engagement Start\"\"}","{\"\"Engagement End\"\"}")) %>%
+  select(event_player_name,player_position,opponent_player_name,opponent_position,event_types) %>%
+  unique()
+```
+
+```{r, fig.width=10, fig.height=6}
+sample_play %>%
+  filter(freeze_frame_position %in% c("Quarterback", "Offensive Lineman", "Running Back") & time_since_snap >= 0 & time_since_snap <= 2.291 + 0.1) %>%
+  ggplot(aes(x = freeze_frame_x, y = freeze_frame_y, groups = freeze_frame_player)) +
+  geom_point(aes(shape=freeze_frame_player, color=time_since_snap)) +
+  geom_point(aes(x=snap_x, y = snap_y),size=3, color = "yellow")
+```
+
+```{r, fig.width=10, fig.height=6}
+sample_play %>%
+  filter((freeze_frame_position %in% c("Quarterback") | freeze_frame_player %in% c("Vincent Taylor", "Marlon Davidson", "Ryan Jensen", "Tristan Wirfs", "Alex Cappa")) & time_since_snap <= 2.291 + 0.1 ) %>%
+  ggplot(aes(x = freeze_frame_x, y = freeze_frame_y, groups = freeze_frame_player)) +
+  geom_point(aes(shape=freeze_frame_player, color=time_since_snap)) +
+  geom_point(aes(x=snap_x, y = snap_y),size=3, color = "yellow")
+```
+
+```{r}
+violators <- sample_play %>%
+  filter(freeze_frame_position %in% c("Defensive Lineman", "Linebacker")) %>%
+  group_by(freeze_frame_player, freeze_frame_position) %>%
+  summarise(
+    went_past = as.integer(any(freeze_frame_x < snap_x)),
+    when_past_since_snap = if (went_past == 1) {
+      min(time_since_snap[freeze_frame_x < snap_x])
+    } else NA_real_,
+    pass_time = pass_time,
+    avg_depth = if (went_past == 1) {
+      mean(
+        (snap_x - freeze_frame_x)[
+          time_since_snap >= when_past_since_snap &
+          time_since_snap <= pass_time
+        ],
+        na.rm = TRUE
+      )
+    } else NA_real_,
+    .groups = "drop"
+  )
+
+violators
+```
+
+```{r}
+snap_x <- sample_play %>%
+  filter(event_types == "{Snap}") %>%
+  pull(event_ball_x) %>%
+  unique()
+
+pass_time <- sample_play %>%
+  filter(event_types == "{Pass}") %>%
+  pull(time_since_snap) %>%
+  unique()
+
+violators <- sample_play %>%
+  filter(freeze_frame_position %in% c("Defensive Lineman", "Linebacker")) %>%
+  group_by(freeze_frame_player, freeze_frame_position) %>%
+  summarise(
+    went_past = as.integer(any(freeze_frame_x < snap_x)),
+    when_past_since_snap = if (went_past == 1) {
+      min(time_since_snap[freeze_frame_x < snap_x])
+    } else NA_real_,
+    pass_time = pass_time,
+    avg_depth = if (went_past == 1) {
+      mean(
+        (snap_x - freeze_frame_x)[
+          time_since_snap >= when_past_since_snap &
+          time_since_snap <= pass_time
+        ],
+        na.rm = TRUE
+      )
+    } else NA_real_,
+    .groups = "drop"
+  )
+
+viol_players <- violators$freeze_frame_player
+
+matchups_all <- sample_play %>%
+  filter(
+    event_types %in% c("{\"\"Engagement Start\"\"}", "{\"\"Engagement End\"\"}"),
+    event_player_name %in% viol_players |
+    opponent_player_name   %in% viol_players
+  ) %>%
+  mutate(
+    freeze_player = if_else(event_player_name %in% viol_players,
+                             event_player_name,
+                             opponent_player_name),
+    opp_player    = if_else(event_player_name %in% viol_players,
+                             opponent_player_name,
+                             event_player_name)
+  ) %>%
+  group_by(freeze_player, opp_player) %>%
+  summarise(
+    pass_time    = unique(pass_time),
+    starts       = list(time_since_snap[event_types == "{\"\"Engagement Start\"\"}"]),
+    ends         = list(time_since_snap[event_types == "{\"\"Engagement End\"\"}"]),
+    .groups      = "drop"
+  ) %>%
+  mutate(
+    Engage_start = starts,
+    Engage_end   = map2(starts, ends, ~ {
+      n <- length(.x)
+      padded <- c(.y, rep(NA_real_, n))[seq_len(n)]
+      padded
+    }),
+    Total_Time   = map2(Engage_start, Engage_end, ~ .y - .x)
+  ) %>%
+  select(freeze_player, opp_player, pass_time, Engage_start, Engage_end, Total_Time) %>%
+  unnest(c(Engage_start, Engage_end, Total_Time)) %>%
+  
+  # 3) now use ff (only the actual freeze‐frame rows) to compute backfield entry
+  rowwise() %>%
+  mutate(
+    window_end = if_else(!is.na(Engage_end), Engage_end, pass_time),
+    
+    # get just this player’s x’s in the window
+    xs = list(
+      ff %>% 
+        filter(freeze_frame_player == freeze_player,
+               time_since_snap >= Engage_start,
+               time_since_snap <= window_end) %>%
+        pull(freeze_frame_x)
+    ),
+    
+    # did any of those dip past the LOS?
+    entered_backfield = as.integer(any(xs < snap_x)),
+    
+    # when was the first dip?
+    when_enter = if (entered_backfield == 1) {
+      ff %>%
+        filter(freeze_frame_player == freeze_player,
+               time_since_snap >= Engage_start,
+               time_since_snap <= window_end,
+               freeze_frame_x < snap_x) %>%
+        pull(time_since_snap) %>%
+        min()
+    } else NA_real_
+  ) %>%
+  ungroup() %>%
+  select(-xs) %>%
+  unique() %>%
+  rename(rusher_name = freeze_player,
+         blocker_name = opp_player) %>%
+  left_join(sample_play%>%select(freeze_frame_player,freeze_frame_position)%>%
+              rename(rusher_name = freeze_frame_player,
+                     rusher_position = freeze_frame_position),by="rusher_name") %>%
+  unique() %>%
+  left_join(sample_play%>%select(freeze_frame_player,freeze_frame_position)%>%
+              rename(blocker_name = freeze_frame_player,
+                     blocker_position = freeze_frame_position),by="blocker_name") %>%
+  unique() %>%
+  filter(blocker_position=="Offensive Lineman")
+
+matchups_all
+```
+```{r}
+qb_track <- sample_play %>%
+  filter(freeze_frame_position == "Quarterback") %>%
+  select(time_since_snap,
+         qb_x = freeze_frame_x,
+         qb_y = freeze_frame_y)
+
+# 2) For each engagement, compute beat_time, beat_dist, and rusher_won
+results2 <- pmap_dfr(
+  list(
+    rusher     = matchups_all$rusher_name,
+    blocker    = matchups_all$blocker_name,
+    start      = matchups_all$Engage_start,
+    end        = matchups_all$Engage_end,
+    pass_time  = matchups_all$pass_time
+  ),
+  function(rusher, blocker, start, end, pass_time) {
+    window_end <- min(end, pass_time, na.rm = TRUE)
+    # pull and widen rusher & blocker coords
+    wide_rb <- sample_play %>%
+      filter(
+        time_since_snap >= start,
+        time_since_snap <= window_end,
+        freeze_frame_player %in% c(rusher, blocker)
+      ) %>%
+      select(time_since_snap,
+             player = freeze_frame_player,
+             x = freeze_frame_x,
+             y = freeze_frame_y) %>%
+      pivot_wider(
+        names_from  = player,
+        values_from = c(x, y),
+        names_glue  = "{player}_{.value}"
+      ) %>%
+      # join in the QB coords
+      left_join(qb_track, by = "time_since_snap")
+    
+    # if no common frames, return NAs
+    if (nrow(wide_rb) == 0 ||
+        !all(c(paste0(rusher, "_x"), paste0(blocker, "_x")) %in% names(wide_rb))) {
+      return(tibble(
+        rusher_name = rusher,
+        blocker_name = blocker,
+        beat_time   = NA_real_,
+        beat_dist   = NA_real_,
+        rusher_won  = 0L
+      ))
+    }
+    
+    # compute distances at each timestamp
+    d_r <- sqrt(
+      (wide_rb[[paste0(rusher, "_x")]] - wide_rb$qb_x)^2 +
+      (wide_rb[[paste0(rusher, "_y")]] - wide_rb$qb_y)^2
+    )
+    d_b <- sqrt(
+      (wide_rb[[paste0(blocker, "_x")]] - wide_rb$qb_x)^2 +
+      (wide_rb[[paste0(blocker, "_y")]] - wide_rb$qb_y)^2
+    )
+    
+    # find the first “beat”
+    idx <- which(d_r < d_b)
+    if (length(idx) > 0) {
+      tibble(
+        rusher_name = rusher,
+        blocker_name = blocker,
+        beat_time   = wide_rb$time_since_snap[idx[1]],
+        beat_dist   = d_r[idx[1]],
+        rusher_won  = 1L
+      )
+    } else {
+      tibble(
+        rusher_name = rusher,
+        blocker_name = blocker,
+        beat_time   = NA_real_,
+        beat_dist   = NA_real_,
+        rusher_won  = 0L
+      )
+    }
+  }
+)
+
+results2
+```
+
+
+```{r}
+results
+```
+
+
+
+```{r}
+
+Oline <- sample_play %>%
+  filter(freeze_frame_player%in%c( "Leonard Williams", "Kaleb McGary", "Matt Ryan") & time_since_snap <= 2.4)
+Oline%>%filter(freeze_frame_player=="Leonard Williams" & event_player_name=="Leonard Williams")
+ggplot(Oline, aes(x=freeze_frame_x,y=freeze_frame_y, group=as.factor(freeze_frame_player))) +
+  geom_point(aes(color=time_since_snap, shape=as.factor(freeze_frame_player)))
+```
+
+
+```{r}
+library(dplyr)
+
+# 1) Extract Lorenzo Carter’s freeze-frame coordinates by frame
+carter_pos <- sample_play %>%
+  filter(freeze_frame_player == "Lorenzo Carter") %>%
+  select(event_game_index,
+         x_c = freeze_frame_x,
+         y_c = freeze_frame_y)
+
+# 2) Extract other offensive players of interest (excluding Carter)
+other_pos <- sample_play %>%
+  filter(freeze_frame_player != "Lorenzo Carter",
+         freeze_frame_position %in% c("Quarterback",
+                                      "Offensive Line",
+                                      "Running Back",
+                                      "Tight End")) %>%
+  select(event_game_index,
+         player   = freeze_frame_player,
+         position = freeze_frame_position,
+         x_o       = freeze_frame_x,
+         y_o       = freeze_frame_y)
+
+# 3) Join on the same frame and compute Euclidean distance
+distances <- inner_join(carter_pos, other_pos, by = "event_game_index") %>%
+  mutate(euclid_dist = sqrt((x_c - x_o)^2 + (y_c - y_o)^2))
+
+# 4) Average distance for each opposing player
+avg_distances <- distances %>%
+  group_by(player, position) %>%
+  summarise(
+    avg_distance = mean(euclid_dist, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+avg_distances
+```
+
+```{r}
+sample_play %>%
+  filter(freeze_frame_position=="Offensive Lineman") %>%
+  select(freeze_frame_player,freeze_frame_position) %>%
+  unique()
+
+sample_play %>%
+  filter(player_position=="Offensive Lineman") %>%
+  select(player_position,event_player_name) %>%
+  unique()
+
+sample_play %>%
+  filter(opponent_position=="Offensive Lineman") %>%
+  select(opponent_position,opponent_player_name) %>%
+  unique()
+```
+"Chris Lindstrom", "Jalen Mayfield", "Matt Hennessy",
+
+```{r}
+sample_play%>%filter(freeze_frame_player%in%c("Dexter Lawrence") & event_player_name=="Dexter Lawrence" & opponent_player_name=="Matt Hennessy")
+```
+
+```{r}
+  
+Oline <- sample_play %>%
+  filter(freeze_frame_player%in%c( "Matt Ryan", "Austin Johnson","Jalen Mayfield", "Jake Matthews"))
+
+ggplot(Oline, aes(x=freeze_frame_x,y=freeze_frame_y, group=as.factor(freeze_frame_player))) +
+  geom_point(aes(color=time_since_snap, shape=as.factor(freeze_frame_player)))
+```
+
+```{r}
+Oline1 <- sample_play %>%
+  filter(freeze_frame_player%in%c("Dexter Lawrence","Chris Lindstrom") & time_since_snap <= pass_time)
+
+Oline2 <- sample_play %>%
+  filter(freeze_frame_player%in%c("Dexter Lawrence","Matt Hennessy") & time_since_snap <= pass_time)
+
+ggplot(Oline1, aes(x=freeze_frame_x,y=freeze_frame_y, group=as.factor(freeze_frame_player))) +
+  geom_point(aes(color=time_since_snap, shape=as.factor(freeze_frame_player))) +
+  geom_vline(xintercept = 29.0, color="red") +
+  geom_vline(xintercept = 26.8, color="red") +
+  geom_vline(xintercept = 27.8	, color = "blue") +
+  geom_vline(xintercept = 26.2, color = "blue")
+
+ggplot(Oline2, aes(x=freeze_frame_x,y=freeze_frame_y, group=as.factor(freeze_frame_player))) +
+  geom_point(aes(color=time_since_snap, shape=as.factor(freeze_frame_player))) +
+  geom_vline(xintercept = 29.1, color="red") +
+  geom_vline(xintercept = 23.1, color="red") +
+  geom_vline(xintercept = 28.5	, color = "blue") +
+  geom_vline(xintercept = 22.9, color = "blue")
+```
+
+```{r}
+dl_matchups <- sample_play %>%
+  mutate(rush_end_time = min(time_since_snap[event_types == "{Pass}"], na.rm = TRUE)) %>%
+  filter(event_types %in% c("{\"\"Engagement Start\"\"}", "{\"\"Engagement End\"\"}") & event_player_name %in% c("Dexter Lawrence"))
+
+dl_matchups %>%
+  group_by(opponent_player_name) %>%
+  summarise(
+    Pass_time = min(rush_end_time),
+    Engage_start = min(time_since_snap[event_types=="{\"\"Engagement Start\"\"}"]),
+    Engage_end = min(time_since_snap[event_types=="{\"\"Engagement End\"\"}"]),
+    Total_Time = time_since_snap[event_types=="{\"\"Engagement End\"\"}"] - time_since_snap[event_types=="{\"\"Engagement Start\"\"}"]
+  ) %>% 
+  unique() %>%
+  ungroup()
+
+lw_matchups <- sample_play %>%
+  mutate(rush_end_time = min(time_since_snap[event_types == "{Pass}"], na.rm = TRUE)) %>%
+  filter(event_types %in% c("{\"\"Engagement Start\"\"}", "{\"\"Engagement End\"\"}") & event_player_name %in% c("Leonard Williams"))
+
+lw_matchups %>%
+  group_by(opponent_player_name) %>%
+  summarise(
+    Pass_time = min(rush_end_time),
+    Engage_start = min(time_since_snap[event_types=="{\"\"Engagement Start\"\"}"]),
+    Engage_end = min(time_since_snap[event_types=="{\"\"Engagement End\"\"}"]),
+    Total_Time = time_since_snap[event_types=="{\"\"Engagement End\"\"}"] - time_since_snap[event_types=="{\"\"Engagement Start\"\"}"]
+  ) %>% 
+  unique() %>%
+  ungroup()
+
+aj_matchups <- sample_play %>%
+  mutate(rush_end_time = min(time_since_snap[event_types == "{Pass}"], na.rm = TRUE)) %>%
+  filter(event_types %in% c("{\"\"Engagement Start\"\"}", "{\"\"Engagement End\"\"}") & event_player_name %in% c("Austin Johnson"))
+
+aj_matchups %>%
+  group_by(opponent_player_name) %>%
+  summarise(
+    Pass_time = min(rush_end_time),
+    Engage_start = min(time_since_snap[event_types=="{\"\"Engagement Start\"\"}"]),
+    Engage_end = min(time_since_snap[event_types=="{\"\"Engagement End\"\"}"]),
+    Total_Time = time_since_snap[event_types=="{\"\"Engagement End\"\"}"] - time_since_snap[event_types=="{\"\"Engagement Start\"\"}"]
+  ) %>% 
+  unique() %>%
+  ungroup()
+```
+
+```{r}
+hist(ten_games$event_ball_x)
+hist(ten_games$event_ball_y)
+```
+
+
+
+
+
+
+
+
+
+
+
+
