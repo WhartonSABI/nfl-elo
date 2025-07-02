@@ -1,7 +1,7 @@
 ---
-title: "BDB_2023_Elo"
-author: "Maximilian J. Gebauer"
-date: "2025-06-16"
+title: "Hudl 10 Sample Games ELO"
+author: "Victoria"
+date: "2025-07-02"
 output: html_document
 ---
 
@@ -20,771 +20,7 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 ```
 
 ```{r}
-#loading in joined data
-full_data <- data.table::fread("../../nfl_data/big_data_bowl_2023_AllWeeks.csv")
-```
-
-```{r}
-#set up response
-full_data <- full_data %>%
-  mutate(response = ifelse(pff_beatenByDefender == 0 & pff_hitAllowed == 0 & pff_hurryAllowed == 0 & pff_sackAllowed == 0, 1, 0))
-
-#enrusing still have full number of plays from og data post cutting
-full_data %>%
-  summarise(total_plays=n_distinct(interaction(gameId,playId)))
-```
-
-```{r}
-#full_test_data <- read.csv("/Users/maximiliangebauer/Downloads/full_test_data.csv")
-```
-
-```{r}
-#initialize all offense and defense elo ratings with implied defender win odds of 10:1, scaling parameter as 400 (chess)
-# assign ratings based on side of ball, ignoring player types unlikely to be in pass blocking interactions
-players2 <- read.csv("../../nfl_data/players.csv")
-init_play_ratings <- players2 %>% 
-  select(nflId, displayName, officialPosition) %>%
-  mutate(Defense = as.factor(ifelse(officialPosition %in% c("DE", "DT", "OLB", "ILB", "MLB", "NT", "LB", "SS", "FS", "CB", "DB"), 1, 0)),
-         Offense = as.factor(ifelse(officialPosition %in% c("C", "G", "T", "TE", "FB", "WR", "RB", "QB"), 1, 0)),
-         Player_Elo = as.numeric(ifelse(Defense=="1",800,1200))
-         )
-```
-
-```{r}
-qb_ids <- players2 %>%
-  filter(officialPosition=="QB") %>%
-  select(nflId)
-
-qb_ids <- qb_ids$nflId
-
-test_data_filtered <- full_data %>%
-  group_by(gameId, playId) %>%
-  filter(
-    !is.na(pff_nflIdBlockedPlayer) |
-    (nflId %in% pff_nflIdBlockedPlayer | nflId %in% qb_ids)
-  ) %>%
-  ungroup()
-```
-
-```{r}
-test_data_filtered <- test_data_filtered %>% select(-c(V1,playDirection))
-head(test_data_filtered)
-```
-
-```{r}
-test_data_filtered_snap <- test_data_filtered %>%
-  group_by(gameId,playId) %>%
-  filter(any(event %in% c("ball_snap"))) %>%
-  ungroup()
-
-
-nrow(test_data_filtered_snap)
-nrow(test_data_filtered)
-```
-
-```{r}
-test_data_filtered_snap %>%
-  summarise(total_plays = n_distinct(interaction(gameId, playId)))
-
-test_data_filtered %>%
-  summarise(total_plays = n_distinct(interaction(gameId, playId)))
-```
-
-```{r}
-snap_end_lookup <- test_data_filtered_snap %>%
-  group_by(gameId, playId) %>%
-  summarise(
-    snap_frame = min(frameId[event == "ball_snap"], na.rm = TRUE),
-    end_frame  = pmin(
-      if (any(event == "pass_forward"))  min(frameId[event == "pass_forward"])  else Inf,
-      if (any(event == "qb_strip_sack")) min(frameId[event == "qb_strip_sack"]) else Inf,
-      if (any(event == "lateral"))       min(frameId[event == "lateral"])       else Inf,
-      if (any(event == "qb_sack"))       min(frameId[event == "qb_sack"])       else Inf,
-      na.rm = TRUE
-    ),
-    .groups = "drop"
-  ) %>%
-  # if none of the end events ever occur, just treat end_frame = snap_frame
-  mutate(end_frame = ifelse(is.infinite(end_frame), snap_frame, end_frame))
-
-
-# 2) Now rebuild test_data_post_snap to only include frames between snap and end
-test_data_post_snap <- test_data_filtered_snap %>%
-  inner_join(snap_end_lookup, by = c("gameId","playId")) %>%
-  filter(frameId >= snap_frame,
-         frameId <= end_frame) %>%
-  ungroup() %>%
-  select(-snap_frame, -end_frame)
-```
-
-```{r}
-head(test_data_post_snap,1000)
-
-test_data_post_snap %>%
-  summarise(total_plays = n_distinct(interaction(gameId, playId)))
-```
-
-
-
-```{r}
-test_data_post_snap <- test_data_post_snap %>%
-  group_by(gameId,playId) %>%
-  filter(any(event %in%c("pass_forward","qb_strip_sack","lateral", "qb_sack"))) %>%
-  ungroup()
-
-df <- test_data_post_snap
-
-qb_pos <- df %>%
-  filter(officialPosition == "QB") %>%
-  transmute(gameId, playId, frameId, x_QB = x, y_QB = y) %>%
-  distinct(gameId, playId, frameId, .keep_all = TRUE)
-
-blockers <- df %>%
-  filter(!is.na(pff_nflIdBlockedPlayer))%>%
-  transmute(gameId, playId, frameId,blocker_id = nflId, rusher_id = pff_nflIdBlockedPlayer) %>% 
-  distinct(gameId, playId, frameId, rusher_id, .keep_all = TRUE)
-
-rusher_pos <- df %>%
-  semi_join(blockers, by = c("gameId","playId","nflId" = "rusher_id")) %>%
-  transmute(gameId, playId, frameId, rusher_id = nflId, x_rusher = x, y_rusher = y) %>%
-  distinct(gameId, playId, frameId, rusher_id, .keep_all = TRUE)
-
-blocker_pos <- df %>%
-  transmute(gameId, playId, frameId, blocker_id = nflId, x_blocker = x, y_blocker = y) %>%
-  distinct(gameId, playId, frameId, blocker_id, .keep_all = TRUE)
-
-# 2) Build pair_metrics (same as before)…
-pair_metrics <- blockers %>%
-  left_join(rusher_pos,     by = c("gameId","playId","frameId","rusher_id")) %>%
-  left_join(qb_pos,         by = c("gameId","playId","frameId")) %>%
-  left_join(blocker_pos,    by = c("gameId","playId","frameId","blocker_id")) %>%
-  left_join(snap_end_lookup, by = c("gameId","playId")) %>%
-  # only keep frames from snap → end_of_play
-  filter(frameId >= snap_frame+8, frameId <= end_frame) %>%
-  arrange(gameId, playId, rusher_id, blocker_id, frameId) %>%
-  group_by(gameId, playId, rusher_id, blocker_id) %>%
-  mutate(
-    d_rusher    = sqrt((x_rusher  - x_QB)^2 + (y_rusher  - y_QB)^2),
-    d_blocker   = sqrt((x_blocker - x_QB)^2 + (y_blocker - y_QB)^2),
-    d_prev      = lag(d_rusher),
-    strain      = -((d_rusher - d_prev) / 0.1) / d_rusher,
-    closer_flag = as.integer(d_rusher < d_blocker),
-    ever_closer = as.integer(any(closer_flag == 1, na.rm = TRUE))
-  ) %>%
-  ungroup()
-
-# 3) A helper for safe‐max
-safe_max <- function(x) {
-  if (all(is.na(x))) NA_real_ else max(x, na.rm = TRUE)
-}
-
-# 4) Summarise per (game,play,rusher,blocker) without warnings
-final_metrics_mod <- pair_metrics %>%
-  group_by(gameId, playId, rusher_id, blocker_id) %>%
-  summarise(
-    mean_strain       = mean(strain, na.rm = TRUE),
-    max_strain        = safe_max(strain),
-    sd_strain         = sd(strain,   na.rm = TRUE),
-    max_zscore_strain = safe_max((strain - mean(strain, na.rm=TRUE)) /
-                                   sd(strain, na.rm=TRUE)),
-    beat_frame = ifelse(
-      any(closer_flag == 1, na.rm = TRUE),
-      min(frameId[closer_flag == 1], na.rm = TRUE),
-      0
-    ),
-    rusher_beat_dist = ifelse(
-      beat_frame > 0,
-      { idx <- which(frameId == beat_frame); d_rusher[idx[1]] },
-      NA_real_
-    ),
-    .groups = "drop"
-  )
-
-
-# 7) Compute each play’s “snap_frame” as the minimum frameId in test_data_post_snap
-snap_lookup <- df %>%
-  group_by(gameId, playId) %>%
-  summarise(snap_frame = min(frameId), .groups="drop")
-
-# 8) Join & compute time from snap to beat (in seconds)
-play_results <- final_metrics_mod %>%
-  left_join(snap_lookup, by = c("gameId","playId")) %>%
-  mutate(
-    time_from_snap_to_beat = pmax((beat_frame - snap_frame) / 10, 0)
-  )
-```
-
-```{r}
-event_frames <- test_data_post_snap %>%
-  group_by(gameId, playId) %>%
-  summarise(
-    pass_forward_frame   = ifelse(any(event == "pass_forward"),   min(frameId[event == "pass_forward"]),   0),
-    qb_strip_sack_frame  = ifelse(any(event == "qb_strip_sack"),  min(frameId[event == "qb_strip_sack"]),  0),
-    lateral_frame        = ifelse(any(event == "lateral"),        min(frameId[event == "lateral"]),        0),
-    qb_sack_frame        = ifelse(any(event == "qb_sack"),        min(frameId[event == "qb_sack"]),        0),
-    .groups = "drop"
-  )
-
-helper_data <- test_data_post_snap %>%
-  rename(blocker_id = nflId) %>%
-  select(
-    gameId,
-    playId,
-    blocker_id,
-    pff_beatenByDefender,
-    pff_hitAllowed,
-    pff_hurryAllowed,
-    pff_sackAllowed
-  ) %>%
-  left_join(event_frames, by = c("gameId","playId")) %>%
-  distinct()
-
-full_results <- play_results %>%
-  left_join(helper_data, by = c("gameId","playId","blocker_id")) %>%
-  unique()
-```
-
-```{r}
-full_results <- full_results %>%
-  group_by(gameId, playId, rusher_id) %>%
-  mutate(
-    n_blockers = n_distinct(blocker_id)
-  ) %>%
-  ungroup()
-```
-
-```{r}
-head(full_results,100)
-```
-
-```{r}
-sub_results <- full_results %>%
-  filter(n_blockers==1) %>%
-  mutate(
-    thresh = factor(
-      case_when(
-        time_from_snap_to_beat > 0 & time_from_snap_to_beat < 2.5 ~ "1",
-        TRUE                                                 ~ "0"
-      ),
-      levels = c("0","1")
-    )
-  )
-
-pos_lookup <- test_data_post_snap %>%
-  select(gameId, playId, nflId, officialPosition) %>%
-  rename(blocker_id = nflId) %>%
-  distinct()
-
-sub_results <- sub_results %>%
-  left_join(
-    pos_lookup,
-    by = c("gameId", "playId", "blocker_id")
-  )
-
-pos_lookup2 <- test_data_post_snap %>%
-  select(gameId, playId, nflId, officialPosition) %>%
-  rename(rusher_id = nflId,
-         position_rusher = officialPosition) %>%
-  distinct()
-
-sub_results <- sub_results %>%
-  left_join(
-    pos_lookup2,
-    by = c("gameId", "playId", "rusher_id")
-  )
-```
-
-```{r}
-sub_results2 %>%
-  group_by(as.factor(pff_beatenByDefender)) %>%
-  summarise(
-    mean_bd = mean(rusher_beat_dist,na.rm=T)
-  ) %>%
-  ungroup()
-```
-
-```{r}
-sub_results2<-sub_results%>%filter(pff_hitAllowed==0 & pff_hurryAllowed==0 & pff_sackAllowed==0 & !position_rusher %in% c("CB","G","RB","LB","SS","FS") & !officialPosition %in% c("QB","RB","FB","WR")) %>%
-  mutate(beat_dist = ifelse(!is.na(rusher_beat_dist)&rusher_beat_dist<6,1,0)) %>%
-  filter(!is.na(beat_dist) & !is.na(sd_strain) & !is.na(max_zscore_strain))
-skim(sub_results2)
-```
-```{r}
-write.csv(sub_results2,file="clean_beat_data.csv")
-```
-
-
-```{r}
-library(lme4)
-
-model_11 <- glmer(
-  pff_beatenByDefender ~ 
-    max_zscore_strain + 
-    mean_strain + 
-    max_strain + 
-    sd_strain + 
-    officialPosition * thresh +           # both should already be factors
-    factor(beat_dist) +                    # if you really want beat_dist as factor
-    (1 | position_rusher),                 # random intercept for each rusher‐position
-  data    = sub_results2,
-  family  = binomial(link = "logit"),
-  control = glmerControl(optimizer = "bobyqa")
-)
-```
-```{r}
-summary(model_11)
-```
-
-```{r}
-library(caret)
-
-# 1) get probs
-probs <- predict(model_11, newdata = sub_results2, type = "response")
-
-# 2) apply threshold
-preds <- factor(ifelse(probs > 0.065, 1, 0),
-                levels = c(0,1))
-
-# 3) actual labels as factor
-actuals <- factor(sub_results2$pff_beatenByDefender,
-                  levels = c(0,1))
-
-# 4) simple contingency table
-print(table(Predicted = preds, Actual = actuals))
-
-# 5) caret confusion matrix (gives accuracy, sensitivity, etc.)
-confusionMatrix(preds, actuals)
-```
-
-
-```{r}
-ggplot(full_results,aes(x=as.factor(pff_beatenByDefender),y=max_zscore_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_beatenByDefender),y=max_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_beatenByDefender),y=mean_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_beatenByDefender),y=sd_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_beatenByDefender),y=time_from_snap_to_beat)) +
-  geom_boxplot()
-```
-
-```{r}
-ggplot(full_results,aes(x=as.factor(pff_hitAllowed),y=max_zscore_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_hitAllowed),y=max_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_hitAllowed),y=mean_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_hitAllowed),y=sd_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_hitAllowed),y=beat_frame)) +
-  geom_boxplot()
-```
-
-
-```{r}
-ggplot(full_results,aes(x=as.factor(pff_hurryAllowed),y=max_zscore_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_hurryAllowed),y=max_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_hurryAllowed),y=mean_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_hurryAllowed),y=sd_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_hurryAllowed),y=beat_frame)) +
-  geom_boxplot()
-```
-
-```{r}
-ggplot(full_results,aes(x=as.factor(pff_sackAllowed),y=max_zscore_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_sackAllowed),y=max_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_sackAllowed),y=mean_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_sackAllowed),y=sd_strain)) +
-  geom_boxplot()
-
-ggplot(full_results,aes(x=as.factor(pff_sackAllowed),y=beat_frame)) +
-  geom_boxplot()
-```
-
-```{r}
-filter_results <- full_results %>%
-  filter(!is.na(pff_beatenByDefender) & !is.na(max_zscore_strain) & !is.na(mean_strain) & !is.na(max_strain) & !is.na(time_from_snap_to_beat)) %>%
-  mutate(
-    beat_25 = as.factor(ifelse(time_from_snap_to_beat>0&time_from_snap_to_beat <= 2.5,1,0))
-  )
-
-pos_lookup <- test_data_post_snap %>%
-  select(gameId, playId, nflId, officialPosition) %>%
-  rename(blocker_id = nflId) %>%
-  distinct()
-
-# then join it in
-filter_results <- filter_results %>%
-  left_join(
-    pos_lookup,
-    by = c("gameId", "playId", "blocker_id")
-  )
-
-pos_lookup2 <- test_data_post_snap %>%
-  select(gameId, playId, nflId, officialPosition) %>%
-  rename(rusher_id = nflId,
-         position_rusher = officialPosition) %>%
-  distinct()
-
-filter_results <- filter_results %>%
-  left_join(
-    pos_lookup2,
-    by = c("gameId", "playId", "rusher_id")
-  )
-```
-
-```{r}
-aaa <- filter_results %>%
-  mutate(
-    one_five = ifelse(max_zscore_strain > 2,1,0),
-    pred = ifelse(one_five==1 | beat_25=="1",1,0)
-  )
-
-table(aaa$beat_25,as.factor(aaa$pff_beatenByDefender))
-table(as.factor(aaa$one_five),as.factor(aaa$pff_beatenByDefender))
-table(as.factor(aaa$pred),as.factor(aaa$pff_beatenByDefender))
-
-filter_results <- filter_results %>%
-  mutate(
-    response = ifelse((pff_beatenByDefender==1 | pff_hitAllowed==1),1,0)
-  )
-```
-
-```{r}
-model_1 <- glm(as.factor(response) ~ max_zscore_strain + splines::bs(time_from_snap_to_beat,df=6,degree=3) + as.factor(officialPosition), data=filter_results, family = "binomial")
-summary(model_1)
-probs <- model_1$fitted.values
-preds <- as.factor(ifelse(probs>.05,1,0))
-table(preds,as.factor(filter_results$pff_beatenByDefender))
-```
-
-```{r}
-filter_results1 <- filter_results %>%
-  mutate(
-    response = case_when(
-      pff_beatenByDefender == 1 ~ "beaten",
-      pff_sackAllowed        == 1 ~ "sack",
-      pff_hitAllowed         == 1 ~ "hit",
-      pff_hurryAllowed       == 1 ~ "hurry",
-      TRUE                        ~ "won"
-    )
-  )
-set.seed(321)
-multi_model1 <- nnet::multinom(as.factor(response)~ max_zscore_strain + splines::bs(time_from_snap_to_beat,df=6,degree=3) + as.factor(officialPosition), data=filter_results1)
-```
-```{r}
-filter_results2 <- filter_results1 %>%
-  filter(n_blockers==1)
-
-X <- model.matrix(pff_beatenByDefender ~ max_zscore_strain + time_from_snap_to_beat + officialPosition + position_rusher, data=filter_results2)
-Y <- as.factor(filter_results2$pff_beatenByDefender)
-set.seed(321)
-cv_model <- glmnet::cv.glmnet(X,Y,nfolds=10,family="binomial")
-```
-
-```{r}
-preds <- predict(cv_model,
-                 newx = X,
-                 s    = "lambda.min",
-                 type = "class")
-
-# 2) Make sure it’s a factor with the same levels as Y
-preds <- factor(as.vector(preds), levels = levels(Y))
-
-# 3) Build the confusion table
-conf_mat <- table(Predicted = preds, Actual = Y)
-print(conf_mat)
-```
-
-```{r}
-filter_results3 <- filter_results2 %>%
-  mutate(
-    beat_3 = as.factor(ifelse(time_from_snap_to_beat>0&time_from_snap_to_beat <= 3.0,1,0))
-  )
-model_2 <- glm(as.factor(pff_beatenByDefender) ~  as.factor(beat_3) + as.factor(officialPosition) + as.factor(position_rusher), data=filter_results3, family = "binomial")
-summary(model_2)
-probs <- model_2$fitted.values
-preds <- as.factor(ifelse(probs>.1,1,0))
-table(preds,as.factor(filter_results2$pff_beatenByDefender))
-```
-
-```{r}
-export_data <- filter_results1 %>%
-  select(gameId,playId,rusher_id,blocker_id,mean_strain,sd_strain,max_strain,max_zscore_strain,time_from_snap_to_beat,n_blockers,officialPosition,position_rusher,response)
-```
-
-```{r}
-write.csv(export_data,file = "predict_beat_data.csv")
-```
-
-```{r}
-test_data_post_snap %>%
-  group_by(gameId,playId) %>%
-  filter(any(event %in%c("pass_forward","qb_strip_sack","lateral", "qb_sack")))
-```
-
-for the code setup below. Within each joint grouping by  (gameId, playId, and nflId), there are a number of observations by frameId (numeric, taking integer values). There is an "event" column in the data frame that takes various character values or NA if no event occurred in that frame.  
-```{r}
-post_snap <- test_data_filtered %>%
-  group_by(gameId,playId,nflId) 
-
-```
-
-
-
-```{r}
-interactions <- test_data_filtered %>%
-  filter(!is.na(pff_nflIdBlockedPlayer)) %>%
-  select(gameId, playId,
-         blocker_nflId = nflId,
-         rusher_nflId  = pff_nflIdBlockedPlayer,
-         outcome = response,
-         everything())
-
-pass_rusher_positions <- c("DE", "DT", "OLB", "ILB", "NT", "SS", "DB", "LB", "MLB", "FS", "CB")
-
-valid_rushers <- init_play_ratings %>%
-  filter(officialPosition %in% pass_rusher_positions) %>%
-  pull(nflId) %>% 
-  as.character()
-
-interactions_pr <- interactions %>%
-  filter(rusher_nflId %in% valid_rushers)
-```
-
-```{r}
-init_ratings <- init_play_ratings %>%
-  select(nflId, Player_Elo)
-
-elo_vec <- setNames(init_ratings$Player_Elo,
-                    as.character(init_ratings$nflId))
-
-learning_rate     <- 32
-
-scaling_parameter <- 400
-```
-
-
-```{r}
-elo_update_function <- function(blocker_elo, rusher_elo, learning_rate, scaling_parameter, outcome) {
-  expected_blocker_win <- 1 / (1 + 10^((rusher_elo - blocker_elo) / scaling_parameter))
-  expected_rusher_win <- 1 - expected_blocker_win
-
-  new_blocker_elo <- blocker_elo + learning_rate * (outcome - expected_blocker_win)
-  new_rusher_elo  <- rusher_elo  + learning_rate * ((1 - outcome) - expected_rusher_win)
-
-  list(
-    blocker_elo = new_blocker_elo,
-    rusher_elo  = new_rusher_elo
-  )
-}
-
-history <- interactions_pr %>%
-  mutate(
-    before_blocker_elo = NA_real_,
-    before_rusher_elo  = NA_real_,
-    after_blocker_elo  = NA_real_,
-    after_rusher_elo   = NA_real_
-  )
-
-library(data.table)
-setDT(history)  #convert to data.table for faster reading 
-
-for (i in seq_len(nrow(history))) {
-  row <- history[i]
-  b_id <- as.character(row$blocker_nflId)
-  r_id <- as.character(row$rusher_nflId)
-  out  <- row$outcome
-  
-  b_elo <- elo_vec[b_id]
-  r_elo <- elo_vec[r_id]
-  
-  new_elos <- elo_update_function(b_elo, r_elo, learning_rate, scaling_parameter, out)
-  
-  set(history, i, "before_blocker_elo", b_elo)
-  set(history, i, "before_rusher_elo",  r_elo)
-  set(history, i, "after_blocker_elo",  new_elos$blocker_elo)
-  set(history, i, "after_rusher_elo",   new_elos$rusher_elo)
-
-  elo_vec[b_id] <- new_elos$blocker_elo
-  elo_vec[r_id] <- new_elos$rusher_elo
-}
-
-fwrite(history, file = "elo_history.csv")
-```
-
-
-```{r}
-history2 <- history %>%
-  mutate(interaction = row_number())
-
-elo_tracks <- bind_rows(
-  history2 %>%
-    transmute(interaction,
-              nflId   = as.character(blocker_nflId),
-              elo     = after_blocker_elo,
-              role    = "blocker"),
-  history2 %>%
-    transmute(interaction,
-              nflId   = as.character(rusher_nflId),
-              elo     = after_rusher_elo,
-              role    = "rusher")
-)
-
-ggplot(elo_tracks, aes(x = interaction, y = elo, group = nflId, color = role)) +
-  geom_line(alpha = 0.7) +
-  labs(x = "Interaction #",
-       y = "Elo rating",
-       color = "Role") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-```
-
-```{r}
-final_elos <- tibble(
-  nflId     = names(elo_vec),
-  final_elo = as.numeric(elo_vec)
-)
-
-players_elos <- init_play_ratings %>%
-  select(nflId, displayName, officialPosition, Defense, Offense) %>%
-  mutate(nflId = as.character(nflId)) %>%
-  left_join(final_elos, by = "nflId")
-
-rusher_ids  <- unique(interactions_pr$rusher_nflId)
-blocker_ids <- unique(interactions_pr$blocker_nflId)
-
-top_rushers <- players_elos %>%
-  filter(nflId %in% rusher_ids) %>%
-  arrange(desc(final_elo)) %>%
-  slice_head(n = 15)
-
-top_blockers <- players_elos %>%
-  filter(nflId %in% blocker_ids) %>%
-  arrange(desc(final_elo)) %>%
-  slice_head(n = 15)
-
-top_rushers
-top_blockers
-```
-
-```{r}
-library(PNWColors)
-history2 <- history %>%
-  mutate(interaction = row_number())
-
-# 2) Stack blocker + rusher tracks into one long table
-elo_tracks <- bind_rows(
-  history2 %>%
-    transmute(
-      interaction,
-      nflId = as.character(blocker_nflId),
-      elo   = after_blocker_elo,
-      role  = "blocker",
-      officialPosition = officialPosition
-    ),
-  history2 %>%
-    transmute(
-      interaction,
-      nflId = as.character(rusher_nflId),
-      elo   = after_rusher_elo,
-      role  = "rusher",
-      officialPosition = officialPosition
-    )
-)
-tracks_named <- elo_tracks %>%
-  left_join(
-    init_play_ratings %>%
-      mutate(nflId = as.character(nflId)) %>%
-      select(nflId, displayName),
-    by = c("nflId")
-  )
-
-# 2) Top-10 rushers
-top_rusher_ids <- top_rushers %>% pull(nflId) %>% as.character()
-
-rusher_tracks <- tracks_named %>% 
-  filter(role == "rusher", nflId %in% top_rusher_ids) %>% 
-
-ggplot(rusher_tracks, aes(x = interaction, y = elo, color = displayName)) +
-  geom_line(size = 1) +
-  scale_color_manual(values = pnw_palette("Sailboat",15)) +
-  
-  labs(
-    title = "Elo Trajectories of Top 15 Pass-Rushers",
-    x     = "Interaction #",
-    y     = "Elo Rating",
-    color = "Player"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-# 3) Top-10 blockers
-top_blocker_ids <- top_blockers %>% pull(nflId) %>% as.character()
-
-blocker_tracks <- tracks_named %>%
-  filter(role == "blocker", nflId %in% top_blocker_ids) %>% 
-
-ggplot(blocker_tracks, aes(x = interaction, y = elo, color = displayName)) +
-  geom_line(size = 1) +
-  scale_color_manual(values = pnw_palette("Sailboat",15)) +
-  labs(
-    title = "Elo Trajectories of Top 15 Blockers",
-    x     = "Interaction #",
-    y     = "Elo Rating",
-    color = "Player"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-```
-
-
-```{r}
-top_blockers_pos <- players_elos %>%
-  filter(nflId %in% blocker_ids & !(officialPosition %in% c("QB", "WR", "RB"))) %>%
-  group_by(officialPosition) %>%
-  arrange(desc(final_elo)) %>%
-  slice_head(n = 10)
-
-top_blockers_pos
-
-top_rushers_post <- players_elos %>%
-  filter(nflId %in% rusher_ids) %>%
-  group_by(officialPosition) %>%
-  arrange(desc(final_elo)) %>%
-  slice_head(n = 10) %>%
-  filter(!officialPosition %in% c("CB", "SS", "FS"))
-
-top_rushers_post
-```
-
-```{r}
-
+#read in ten sample games data
 new_data <- fread("../../nfl_data/10_sample_games.csv")
 ```
 
@@ -794,34 +30,378 @@ head(new_data)
 ```
 
 ```{r}
-sample_game <- new_data %>%
-  filter(game_id == 1069714)
 
-length(unique(new_data$play_uuid))
+matchups <- new_data 
+  
+matchup_tracking <- matchups %>%
+  left_join(
+    matchups %>% 
+      select(game_id, play_uuid, time_since_snap, freeze_frame_player_id, freeze_frame_x, freeze_frame_y, freeze_frame_player) %>% 
+      rename(
+        opponent_player_id = freeze_frame_player_id,
+        x_opp = freeze_frame_x,
+        y_opp = freeze_frame_y,
+        opponent_name = freeze_frame_player
+      ),
+    by = c("game_id", "play_uuid", "time_since_snap", "opponent_player_id")
+  )
+  
+matchup_tracking_with_qb <- matchups %>%
+  left_join(
+    matchups %>%
+      filter(freeze_frame_position == "Quarterback") %>%
+      # %>%
+      select(game_id, play_uuid, time_since_snap,
+             qb_id = freeze_frame_player_id,
+             qb_x  = freeze_frame_x,
+             qb_y  = freeze_frame_y,
+             qb_name = freeze_frame_player),
+    by = c("game_id", "play_uuid", "time_since_snap")
+  )
 
-pass_data <- new_data %>% 
+
+
+```
+```{r}
+#get start and end frame insights
+unique(new_data$freeze_frame_position)
+```
+
+```{r}
+#make table with just engagement start and ends
+engagements <- matchup_tracking_with_qb %>% 
+  filter(event_types %in% c("{\"\"\"\"Engagement Start\"\"\"\"}"  , "{\"\"\"\"Engagement End\"\"\"\"}", "{Pass}" , "{Pass,Hit}"))
+
+```
+
+
+```{r}
+#make table with each 
+matchups_all <- engagements %>%
+  filter(
+    event_types %in% c(
+      "{\"\"\"\"Engagement Start\"\"\"\"}",
+      "{\"\"\"\"Engagement End\"\"\"\"}",
+      "{Pass}", "{Pass,Hit}"
+    )
+  ) %>%
+  arrange(play_uuid, event_uuid, player_id, opponent_player_id, event_types) %>%
+  #filter(player_position %in% c("Defensive Lineman", "Linebacker")) %>%  # only keep defenders
+  group_by(play_uuid, player_id, opponent_player_id) %>%
+  summarize(
+  rusher_idx = which(freeze_frame_position %in% c("Defensive Lineman", "Linebacker"))[1],
+  blocker_idx = which(opponent_position == "Offensive Lineman")[1],
+
+  rusher_id = if (!is.na(rusher_idx)) player_id[rusher_idx] else NA_integer_,
+  rusher_name = if (!is.na(rusher_idx)) freeze_frame_player[rusher_idx] else NA_character_,
+
+  blocker_id = if (!is.na(blocker_idx)) opponent_player_id[blocker_idx] else NA_integer_,
+  blocker_name = if (!is.na(blocker_idx)) opponent_player_name[blocker_idx] else NA_character_,
+
+  Engage_start = time_since_snap[event_types == "{\"\"\"\"Engagement Start\"\"\"\"}"][1],
+  Engage_end   = time_since_snap[event_types == "{\"\"\"\"Engagement End\"\"\"\"}"][1],
+
+  game_id  = first(game_id),
+  qb_id    = first(qb_id),
+  qb_x     = first(qb_x),
+  qb_y     = first(qb_y),
+  qb_name  = first(qb_name),
+  .groups = "drop"
+)
+
+```
+
+```{r}
+#get pass times
+pass_times <- engagements %>%
+  filter(event_types == "{Pass}") %>%
   group_by(play_uuid) %>%
-  filter(any(event_types %in% c("{Pass}","{Passer-Hit}","{Pass,Hit}","{Pass,Off-Camera}","{Tackled,Sacked}","{Sacked,Tackled}")))
+  summarize(pass_time = min(time_since_snap, na.rm = TRUE), .groups = "drop")
 
-length(unique(pass_data$play_uuid))
-```
-
-1024025 Dexter Lawrence
-```{r}
-sample_game %>%
-  filter(play_uuid=="a0dc69e6-c5f9-4a81-a823-e92a3efc918c")
-```
-
-Test whether matchup detection was correct within BDB data by comparing to hudl data 
-
-```{r}
-matchups <- new_data %>% 
-  filter()
+matchups_all <- matchups_all %>%
+  left_join(pass_times, by = "play_uuid")
 ```
 
 ```{r}
-str(history)
+#prepare engagements table to iterate through frames in a play
+play_tracking <- engagements %>%
+  group_by(play_uuid) %>%
+  nest()
+
+#merge with matchups_all to contain each matchups and then the freeze frames for each one in a separate column
+matchups_all_nested <- matchups_all %>%
+  left_join(play_tracking, by = "play_uuid")
 ```
+
 ```{r}
+
+#function to calculate pass block win
+safe_eval <- function(rusher, blocker, start, end, pass_time, tracking, game_id, play_id) {
+  tryCatch({
+    if (is.na(start) || is.na(end) || is.na(pass_time) || !is.data.frame(tracking)) {
+      return(tibble(
+        rusher_name  = rusher,
+        blocker_name = blocker,
+        beat_time    = NA_real_,
+        beat_dist    = NA_real_,
+        rusher_won   = 0L
+      ))
+    }
+
+    window_end <- min(end, pass_time, na.rm = TRUE)
+
+    rusher_x_col <- paste0(rusher, "_x")
+    rusher_y_col <- paste0(rusher, "_y")
+    blocker_x_col <- paste0(blocker, "_x")
+    blocker_y_col <- paste0(blocker, "_y")
+
+    wide_rb <- tracking %>%
+      filter(
+        time_since_snap >= start,
+        time_since_snap <= window_end,
+        freeze_frame_player %in% c(rusher, blocker)
+      ) %>%
+      select(time_since_snap,
+             player = freeze_frame_player,
+             x = freeze_frame_x,
+             y = freeze_frame_y) %>%
+      group_by(time_since_snap, player) %>%
+      summarise(
+        x = mean(x, na.rm = TRUE),
+        y = mean(y, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      pivot_wider(
+        names_from = player,
+        values_from = c(x, y),
+        names_glue = "{player}_{.value}"
+      ) %>%
+      left_join(
+        tracking %>% select(time_since_snap, qb_x, qb_y),
+        by = "time_since_snap"
+      ) %>%
+      mutate(across(ends_with("_x"), as.numeric),
+             across(ends_with("_y"), as.numeric))
+
+    required_cols <- c(rusher_x_col, rusher_y_col,
+                       blocker_x_col, blocker_y_col, "qb_x", "qb_y")
+
+    if (nrow(wide_rb) == 0 || !all(required_cols %in% names(wide_rb))) {
+      return(tibble(
+        rusher_name  = rusher,
+        blocker_name = blocker,
+        beat_time    = NA_real_,
+        beat_dist    = NA_real_,
+        rusher_won   = 0L
+      ))
+    }
+
+    # Distance to QB
+    d_r <- sqrt((wide_rb[[rusher_x_col]] - wide_rb$qb_x)^2 +
+                (wide_rb[[rusher_y_col]] - wide_rb$qb_y)^2)
+    d_b <- sqrt((wide_rb[[blocker_x_col]] - wide_rb$qb_x)^2 +
+                (wide_rb[[blocker_y_col]] - wide_rb$qb_y)^2)
+
+    idx <- which(d_r < d_b)
+
+    if (length(idx) > 0 && idx[1] <= nrow(wide_rb)) {
+      tibble(
+        game_id = game_id,
+        play_id = play_id,
+        rusher_name  = rusher,
+        blocker_name = blocker,
+        beat_time    = as.numeric(wide_rb$time_since_snap[idx[1]]),
+        beat_dist    = as.numeric(d_r[idx[1]]),
+        rusher_won   = 0L
+      )
+    } else {
+      tibble(
+        game_id = game_id,
+        play_id = play_id,
+        rusher_name  = rusher,
+        blocker_name = blocker,
+        beat_time    = NA_real_,
+        beat_dist    = NA_real_,
+        rusher_won   = 1L
+      )
+    }
+
+  }, error = function(e) {
+    tibble(
+      rusher_name  = rusher,
+      blocker_name = blocker,
+      beat_time    = NA_real_,
+      beat_dist    = NA_real_,
+      rusher_won   = 0L
+    )
+  })
+}
+
+#apply function to get table of results
+results2 <- pmap_dfr(
+  list(
+    rusher     = matchups_all_nested$rusher_name,
+    blocker    = matchups_all_nested$blocker_name,
+    start      = matchups_all_nested$Engage_start,
+    end        = matchups_all_nested$Engage_end,
+    pass_time  = matchups_all_nested$pass_time,
+    tracking   = matchups_all_nested$data,
+    game_id = matchups_all_nested$game_id, 
+    play_id = matchups_all_nested$play_uuid
+  ),
+  safe_eval
+)
+```
+
+```{r}
+results_cleaned <- results2 %>% 
+  drop_na(game_id, rusher_name, blocker_name) %>% 
+  arrange(game_id, play_id)
+```
+
+```{r}
+K <- 32
+scale <- 400
+
+elo_step <- function(belo, relo, outcome) {
+  exp_blk <- 1 / (1 + 10 ^ ((relo - belo) / scale))
+  c(
+    b = belo + K * ( outcome      - exp_blk),      # blocker update
+    r = relo + K * ((1 - outcome) - (1 - exp_blk)) # rusher update
+  )
+}
+
+get_elo <- function(id) {
+  if (!id %in% names(elo_vec)) elo_vec[[as.character(id)]] <<- 1000
+  elo_vec[[as.character(id)]]
+} 
+
+```
+
+```{r}
+
+results_cleaned = as.data.table(results_cleaned)
+interaction_counts <- list() #initialize to count number of interactions for player
+
+elo_history <- results_cleaned [
+  , .(game_id, play_id, rusher_name, blocker_name, rusher_won, 
+      before_blocker_elo = NA_real_,
+      before_rusher_elo  = NA_real_,
+      after_blocker_elo  = NA_real_,
+      after_rusher_elo   = NA_real_,
+      elo_history$blocker_n <- NA_integer_,
+      elo_history$rusher_n <- NA_integer_
+  )
+]
+
+for (i in seq_len(nrow(elo_history))) {
+
+  b_id <- elo_history$blocker_name[i]  # or blocker_id if using ID
+  r_id <- elo_history$rusher_name[i]   # or rusher_id
+  out  <- elo_history$rusher_won[i]    # this is your outcome
+
+  b_elo <- get_elo(b_id)
+  r_elo <- get_elo(r_id)
+
+  elo_history$before_blocker_elo[i] <- b_elo
+  elo_history$before_rusher_elo[i]  <- r_elo
+  
+  interaction_counts[[r_id]] <- (interaction_counts[[r_id]] %||% 0L) + 1L
+  interaction_counts[[b_id]] <- (interaction_counts[[b_id]] %||% 0L) + 1L
+
+  elo_history$blocker_n[i] <- interaction_counts[[b_id]]
+  elo_history$rusher_n[i]  <- interaction_counts[[r_id]]
+
+  new <- elo_step(b_elo, r_elo, out)
+
+  elo_history$after_blocker_elo[i] <- new["b"]
+  elo_history$after_rusher_elo[i]  <- new["r"]
+
+  elo_vec[[b_id]] <- new["b"]
+  elo_vec[[r_id]] <- new["r"]
+}
+```
+
+```{r}
+#get results
+elo_df <- enframe(elo_vec, name = "player_name", value = "final_elo")
+
+#differentiate between rushers and blockers
+player_roles <- results_cleaned %>%
+  select(rusher_name, blocker_name) %>%
+  pivot_longer(cols = everything(), values_to = "player_name") %>%
+  mutate(role = ifelse(name == "rusher_name", "Rusher", "Blocker")) %>%
+  distinct(player_name, role)
+
+#join to get elo with annotated rusher/blocker label
+elo_labeled <- elo_df %>%
+  left_join(player_roles, by = "player_name") %>%
+  filter(!is.na(role))
+
+#get top 10
+top_rushers <- elo_labeled %>%
+  filter(role == "Rusher") %>%
+  slice_max(final_elo, n = 10)
+
+top_blockers <- elo_labeled %>%
+  filter(role == "Blocker") %>%
+  slice_max(final_elo, n = 10)
+```
+
+```{r}
+#pivot to get elo updates per play 
+elo_long <- elo_history %>%
+  select(game_id, play_id,
+         rusher_name, blocker_name,
+         after_rusher_elo, after_blocker_elo,
+         rusher_n, blocker_n) %>%
+  pivot_longer(
+    cols = c(after_rusher_elo, after_blocker_elo),
+    names_to = "elo_type",
+    values_to = "elo"
+  ) %>%
+  mutate(
+    player_name = ifelse(elo_type == "after_rusher_elo", rusher_name, blocker_name),
+    interaction_n = ifelse(elo_type == "after_rusher_elo", rusher_n, blocker_n),
+    role = ifelse(elo_type == "after_rusher_elo", "Rusher", "Blocker")
+  ) %>%
+  select(play_id, game_id, player_name, role, interaction_n, elo) %>%
+  filter(!is.na(elo))
+
+#filter for top players
+top_players <- elo_long %>%
+  group_by(player_name, role) %>%
+  summarize(final_elo = max(elo, na.rm = TRUE), .groups = "drop") %>%
+  group_by(role) %>%
+  slice_max(final_elo, n = 10) %>%
+  pull(player_name)
+
+elo_top <- elo_long %>%
+  filter(player_name %in% top_players)
+```
+
+```{r}
+elo_top_rusher <- elo_top %>% filter(role == "Rusher")
+elo_top_blocker <- elo_top %>% filter(role == "Blocker")
+
+ggplot(elo_top_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
+  geom_line(size = 1) +
+  labs(
+    title = "Top 10 Rushers: Elo Trajectory",
+    x = "Interaction Number",
+    y = "Elo Rating",
+    color = "Rusher"
+  ) +
+  theme_minimal()
+
+ggplot(elo_top_blocker, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
+  geom_line(size = 1) +
+  labs(
+    title = "Top 10 Blockers: Elo Trajectory",
+    x = "Interaction Number",
+    y = "Elo Rating",
+    color = "Rusher"
+  ) +
+  theme_minimal()
 ```
 
