@@ -16,7 +16,7 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
                GGally, RColorBrewer, ggsci, plotROC, usmap,
                plotly, ggpubr, vistime, coefplot, skimr, car, ggrepel, slider, lubridate,
                tidymodels,ranger,vip,ggplot2, tune, dials, pdp, purrr, stringr, lmtest,
-               sandwich)
+               sandwich,slider, yardstick)
 ```
 
 ```{r}
@@ -150,6 +150,28 @@ interactions_pr %>%
   summarise(outcomes = n_distinct(outcome), .groups = "drop") %>%
   count(outcomes)
 ```
+```{r}
+interactions_pr <- interactions_pr %>%
+  mutate(
+    rusher_penalty = if_any(starts_with("rusher_penalty"), ~ !is.na(.)),
+    blocker_penalty = if_any(starts_with("blocker_penalty"), ~ !is.na(.)),
+    response_mod = case_when(
+      rusher_penalty & !blocker_penalty & outcome == "sack"   ~ "hit",
+      rusher_penalty & !blocker_penalty & outcome == "hit"    ~ "hurry",
+      rusher_penalty & !blocker_penalty & outcome == "hurry"  ~ "beaten",
+      rusher_penalty & !blocker_penalty & outcome == "beaten" ~ "won",
+      rusher_penalty & !blocker_penalty & outcome == "won"    ~ "won",
+      blocker_penalty & !rusher_penalty & outcome == "won"    ~ "beaten",
+      blocker_penalty & !rusher_penalty & outcome == "beaten" ~ "hurry",
+      blocker_penalty & !rusher_penalty & outcome == "hurry"  ~ "hit",
+      blocker_penalty & !rusher_penalty & outcome == "hit"    ~ "sack",
+      blocker_penalty & !rusher_penalty & outcome == "sack"   ~ "sack",
+      rusher_penalty & blocker_penalty                        ~ outcome,
+      TRUE                                                    ~ outcome
+    )
+  ) %>%
+  select(-rusher_penalty, -blocker_penalty)
+```
 
 
 ```{r}
@@ -161,17 +183,42 @@ interactions_pr_1 <- interactions_pr %>%
   mutate(blocker_row = row_number()) %>%
   ungroup()
 
-adaptive_K <- function(n, K_start = 40, K_min = 20, n_decay = 100) {
-  val <- K_min + (K_start - K_min) * exp(-(n - 1) / n_decay)
-  pmax(val, K_min)
+adaptive_K_prov <- function(n,
+                            K_start = 20,
+                            K_min   = 10,
+                            n_prov  = 50,
+                            n_decay = 100) {
+  # for each n, if n <= n_prov → K_min;
+  # else if n <= n_decay → linearly ramp down from K_start→K_min;
+  # else → K_min
+  k <- ifelse(
+    n <= n_prov,
+    K_min,
+    ifelse(
+      n <= n_decay,
+      K_start + (K_min - K_start) * (n - n_prov) / (n_decay - n_prov),
+      K_min
+    )
+  )
+  # just in case the linear formula ever undershoots:
+  pmax(k, K_min)
 }
 
+# 2) apply to both rushers & blockers
 interactions_pr_1 <- interactions_pr_1 %>%
   group_by(rusher_nflId) %>%
-  mutate(rusher_k = adaptive_K(rusher_row, K_start = 40, K_min = 20, n_decay = 100)) %>%
+    mutate(rusher_k  = adaptive_K_prov(rusher_row,
+                                      K_start = 20,
+                                      K_min   = 10,
+                                      n_prov  = 50,
+                                      n_decay = 100)) %>%
   ungroup() %>%
   group_by(blocker_nflId) %>%
-  mutate(blocker_k = adaptive_K(blocker_row, K_start = 40, K_min = 20, n_decay = 100)) %>%
+    mutate(blocker_k = adaptive_K_prov(blocker_row,
+                                      K_start = 20,
+                                      K_min   = 10,
+                                      n_prov  = 50,
+                                      n_decay = 100)) %>%
   ungroup()
 
 head(interactions_pr_1)
@@ -220,38 +267,37 @@ get_elo <- function(id) {
   elo_vec[[id]]
 }
 
-elo_outcome_value <- function(outcome) {
+elo_outcome_value <- function(response_mod) {
   case_when(
-    outcome == "won"    ~ 1,
-    outcome == "beaten"  ~ 0.7,
-    outcome == "hurry"    ~ 0.55,
-    outcome == "hit" ~ 0.45,
-    outcome == "sack"   ~ 0
+    response_mod == "won"    ~ 1,
+    response_mod == "beaten"  ~ 0.7,
+    response_mod == "hurry"    ~ 0.55,
+    response_mod == "hit" ~ 0.45,
+    response_mod == "sack"   ~ 0
   )
 }
 
 elo_step <- function(
-  belo, relo, outcome, blocker_K, rusher_K,
+  belo, relo, response_mod, blocker_K, rusher_K,
   n_blockers_for_rusher = 1, scale = 400
 ) {
-  outcome <- elo_outcome_value(outcome)
-  if (is.na(outcome)) return(c(b = belo, r = relo))   # skip update if NA
+  outcome <- elo_outcome_value(response_mod)
+  if (is.na(outcome)) return(c(b = belo, r = relo))   
 
-  # Add Elo bonus to blocker if >1 blockers assigned to rusher
   blocker_bonus <- 100 * log2(n_blockers_for_rusher)
   adj_belo <- belo + blocker_bonus
 
   exp_blk <- 1 / (1 + 10 ^ ((relo - adj_belo) / scale))
 
   c(
-    b = belo + blocker_K * ( outcome      - exp_blk),      # blocker update
-    r = relo + rusher_K * ((1 - outcome) - (1 - exp_blk))  # rusher update
+    b = belo + blocker_K * ( outcome      - exp_blk),      
+    r = relo + rusher_K * ((1 - outcome) - (1 - exp_blk))
   )
 }
 
 elo_history <- interactions_pr_1[
   , .(gameId, playId, row_id,
-      blocker_nflId, rusher_nflId, outcome,
+      blocker_nflId, rusher_nflId, response_mod,
       blocker_k, rusher_k,
       rusher_row, blocker_row,# <- add the adaptive K columns
       before_blocker_elo = NA_real_,
@@ -264,7 +310,7 @@ for (i in seq_len(nrow(elo_history))) {
 
   b_id <- elo_history$blocker_nflId[i]
   r_id <- elo_history$rusher_nflId[i]
-  out  <- elo_history$outcome[i]
+  out  <- elo_history$response_mod[i]
   b_K  <- elo_history$blocker_k[i]
   r_K  <- elo_history$rusher_k[i]
 
@@ -290,23 +336,20 @@ interaction_counts <- rbind(
   interactions_pr_1[ , .(n = .N), by = .(nflId = blocker_nflId)],
   interactions_pr_1[ , .(n = .N), by = .(nflId = rusher_nflId)]
 )[
-  , .(n_interactions = sum(n)), by = nflId          # merge blocker + rusher counts
+  , .(n_interactions = sum(n)), by = nflId
 ]
 
 ladder <- data.table(
   nflId     = names(elo_vec),
   final_elo = as.numeric(elo_vec)
 )[
-  # make sure the key column types match before the join
   , nflId := as.character(nflId)
 ][
-  # join player meta
   players2[ , .(nflId = as.character(nflId),
                 displayName,
                 officialPosition)],
   on = "nflId"
 ][
-  # join interaction counts
   interaction_counts,
   on = "nflId"
 ][
@@ -316,10 +359,7 @@ ladder <- data.table(
         "Defense", "Offense")
 ]
 
-## ---------------------------------------------------------------
-## 3.  leaderboards with the 25-rep minimum
-## ---------------------------------------------------------------
-min_reps <- 100
+min_reps <- 200
 
 top_rushers <- ladder[
   side_of_ball == "Defense" & n_interactions >= min_reps
@@ -333,12 +373,12 @@ top_rushers
 top_blockers
 
 datar<-ladder %>%
-  filter(side_of_ball=="Offense")
+  filter(side_of_ball=="Offense" & n_interactions >= min_reps)
 
 hist(datar$final_elo)
 
 datar1<-ladder %>%
-  filter(side_of_ball=="Defense")
+  filter(side_of_ball=="Defense" & n_interactions >= min_reps)
 
 hist(datar1$final_elo)
 
@@ -347,33 +387,11 @@ summary(datar1$final_elo)
 ```
 
 ```{r}
-mg <- elo_history %>%
-  filter(rusher_nflId=="44813")
-
-table(mg$outcome)
-
-tj <- elo_history %>%
-  filter(rusher_nflId=="44842")
-table(tj$outcome)
-
-rq <- elo_history %>%
-  filter(rusher_nflId=="37087") 
-table(rq$outcome)
-
-lf <- elo_history %>%
-  filter(rusher_nflId=="43298")
-table(lf$outcome)
-
-
-ad <- elo_history %>%
-  filter(rusher_nflId=="41239")
-table(ad$outcome)
-
-min_n <- 100
+min_n <- 200
 
 interactions_pr_1 %>%
   group_by(rusher_nflId) %>%
-  filter(n() >= min_n) %>%   # keep only rushers with at least min_n rows
+  filter(n() >= min_n) %>% 
   mutate(mean_blockers = mean(n_blockers_for_rusher, na.rm = TRUE)) %>%
   ungroup() %>%
   arrange(desc(mean_blockers)) %>%
@@ -388,31 +406,24 @@ interactions_pr_1 %>%
 ```
 
 ```{r}
-library(dplyr)
-library(ggplot2)
-
-# 1. Get all valid rusher_ids (by position)
 rusher_ids <- players2 %>%
   filter(officialPosition %in% c("DE", "DT", "OLB", "ILB", "NT", "LB", "MLB", "FS", "SS", "CB", "DB")) %>%
   pull(nflId) %>% as.character()
 
-# 2. Compute mean Elo per rusher (only those with >99 obs)
 top_rusher_means <- elo_history %>%
   filter(rusher_nflId %in% rusher_ids) %>%
   group_by(rusher_nflId) %>%
-  filter(any(rusher_row > 99)) %>%
+  filter(any(rusher_row > 199)) %>%
   summarise(mean_elo = mean(after_rusher_elo, na.rm = TRUE)) %>%
   arrange(desc(mean_elo)) %>%
   slice_head(n = 10)
 
 top_rusher_ids <- top_rusher_means$rusher_nflId
 
-# 3. Get full trajectories for only these top 10 rushers
 rusher_trajectories <- elo_history %>%
   filter(rusher_nflId %in% top_rusher_ids) %>%
-  left_join(elo_tbl %>% select(nflId, displayName), by = c("rusher_nflId" = "nflId"))
+  left_join(players2 %>% select(nflId, displayName) %>% mutate(nflId=as.character(nflId)), by = c("rusher_nflId" = "nflId"))
 
-# 4. Plot
 ggplot(rusher_trajectories, aes(x = rusher_row, y = after_rusher_elo, color = displayName, group = displayName)) +
   geom_line(size = 1) +
   labs(
@@ -426,11 +437,6 @@ ggplot(rusher_trajectories, aes(x = rusher_row, y = after_rusher_elo, color = di
 ```
 
 ```{r}
-library(dplyr)
-library(slider)
-library(ggplot2)
-
-# 1. Compute 5-observation moving average of Elo for each top rusher
 rusher_trajectories_ma <- rusher_trajectories %>%
   group_by(rusher_nflId) %>%
   arrange(rusher_row, .by_group = TRUE) %>%
@@ -439,7 +445,6 @@ rusher_trajectories_ma <- rusher_trajectories %>%
   ) %>%
   ungroup()
 
-# 2. Plot the moving average Elo trajectories
 ggplot(rusher_trajectories_ma, aes(x = rusher_row, y = elo_ma5, color = displayName, group = displayName)) +
   geom_line(size = 1.1, na.rm = TRUE) +
   labs(
@@ -453,33 +458,674 @@ ggplot(rusher_trajectories_ma, aes(x = rusher_row, y = elo_ma5, color = displayN
 ```
 
 ```{r}
-n_vec <- c(1,2,3,4)
-blocker_elo <- 1200
-rusher_elo <- 800
-
-prob_block_win <- 1 / (1 + 10^((1200 + (100 * log2(n_vec)) - 800) / 400))
-
-1-prob_block_win
-
-interactions_pr %>%
-  group_by(factor(n_blockers_for_rusher)) %>%
-  summarise(N = n(),
-            sum_win = sum(outcome=="won", na.rm = T),
-            prob_win = sum_win / N)
+head(elo_history)
+```
+```{r}
+rusher_results1 <- elo_history %>%
+  group_by(rusher_nflId) %>%
+  summarise(
+    num_observations = max(rusher_row, na.rm=TRUE),
+    # tail(x, 25) will return all obs if <25, so this does exactly what you want:
+    mean_25         = mean( tail(after_rusher_elo, 25), na.rm=TRUE )
+  )
 ```
 
 ```{r}
-blocker_elo <- 1200
-rusher_elo <- 800
+rusher_results <- rusher_results1 %>%
+  left_join(players2 %>% 
+              select(nflId, displayName, officialPosition) %>%
+              mutate(nflId = as.character(nflId)),
+            by = c("rusher_nflId" = "nflId")) %>%
+  arrange(desc(mean_25))
 
-p <- 0.909090
-p_win <- p
-
-outcomes <- c(0,.1,.2,.3,.4,.5,.6,.7,.8,.9,1)
-outcomes2 <- c(0,.45,.55,.7,1)
-
-(deltas <- 32 * (outcomes2 - p_win))
+rusher_results
 ```
+
+```{r}
+blocker_results1 <- elo_history %>%
+  group_by(blocker_nflId) %>%
+  summarise(
+    num_observations = max(blocker_row, na.rm=TRUE),
+    # tail(x, 25) will return all obs if <25, so this does exactly what you want:
+    mean_25         = mean( tail(after_blocker_elo, 25), na.rm=TRUE )
+  )
+```
+
+```{r}
+blocker_results <- blocker_results1 %>%
+  left_join(players2 %>% 
+              select(nflId, displayName, officialPosition) %>%
+              mutate(nflId = as.character(nflId)),
+            by = c("blocker_nflId" = "nflId")) %>%
+  arrange(desc(mean_25))
+
+blocker_results
+```
+
+```{r}
+rusher_results <- rusher_results %>%
+  rename(nflId = rusher_nflId)
+blocker_results <- blocker_results %>%
+  rename(nflId = blocker_nflId)
+```
+
+```{r}
+rusher_results
+blocker_results
+```
+
+```{r}
+all_results <- rbind(
+  rusher_results %>%
+    mutate(side_of_ball = "Defense"),
+  blocker_results %>%
+    mutate(side_of_ball = "Offense")
+)
+```
+
+```{r}
+all_results
+```
+
+```{r}
+counts <- elo_history %>%
+  group_by(rusher_nflId) %>%
+  summarise(
+    sack_count = sum(response_mod == "sack", na.rm = TRUE),
+    hit_count  = sum(response_mod == "hit", na.rm = TRUE),
+    hurry_count = sum(response_mod == "hurry", na.rm = TRUE),
+    beaten_count = sum(response_mod == "beaten", na.rm = TRUE)
+  )
+```
+
+```{r}
+counts <- counts %>%
+  rename(
+    nflId = rusher_nflId
+  )
+```
+
+```{r}
+all_results_full <- all_results %>%
+  left_join(counts, by = "nflId")
+all_results_full
+```
+
+```{r}
+counts2 <- elo_history %>%
+  group_by(blocker_nflId) %>%
+  summarise(
+    sack_count = sum(response_mod == "sack", na.rm = TRUE),
+    hit_count  = sum(response_mod == "hit", na.rm = TRUE),
+    hurry_count = sum(response_mod == "hurry", na.rm = TRUE),
+    beaten_count = sum(response_mod == "beaten", na.rm = TRUE)
+  )
+
+
+counts2 <- counts2 %>%
+  rename(
+    nflId = blocker_nflId
+  )
+counts2
+```
+
+```{r}
+counts_final <- rbind(counts,counts2)
+counts_final
+```
+
+```{r}
+all_results_complete <- all_results %>%
+  left_join(counts_final, by = "nflId")
+all_results_complete
+```
+
+```{r}
+write_csv(all_results_complete, "elo_prelim_results.csv")
+```
+
+```{r}
+test_all <- read.csv("/Users/maximiliangebauer/Documents/nfl_elo/code/elo_prelim_results.csv")
+test_all
+
+max_data <- max_data %>%
+  mutate(position_mod = case_when(
+    officialPosition %in% c("ILB","OLB","MLB")    ~ "LB",
+    officialPosition == "DE"  ~ "ED",
+    officialPosition %in% c("NT","DT")    ~ "IDL",
+    officialPosition %in% c("FS","SS") ~ "S",
+    officialPosition == "CB"   ~ "CB",
+    officialPosition == "WR"   ~ "WR",
+    officialPosition == "C"   ~ "C",
+    officialPosition == "FB"   ~ "FB",
+    officialPosition == "RB"   ~ "RB",
+    officialPosition == "TE"   ~ "TE",
+    officialPosition == "QB"   ~ "QB",
+    officialPosition == "G"   ~ "G",
+    officialPosition == "T"   ~ "T"
+  ))
+
+cap_data <- cap_data %>%
+  mutate(position_mod = case_when(
+    position %in% c("RT","LT") ~ "T",
+    position %in% c("RG","LG") ~ "G",
+    position == "C" ~ "C",
+    position == "FB" ~ "FB",
+    position == "TE" ~ "TE",
+    position == "WR" ~ "WR",
+    position == "RB" ~ "RB",
+    position == "QB" ~ "QB",
+    position == "ED" ~ "ED",
+    position == "IDL" ~ "IDL",
+    position == "LB" ~ "LB",
+    position == "S" ~ "S"
+  ))
+```
+
+```{r}
+test_all %>%
+  filter(num_observations>0) %>%
+  ggplot(aes(x=mean_25))+
+  geom_histogram(color="white",fill="steelblue")+
+  theme_minimal() +
+  facet_wrap(~side_of_ball, scales = "free")
+
+test_all %>%
+  filter(num_observations>9) %>%
+  ggplot(aes(x=mean_25))+
+  geom_histogram(color="white",fill="steelblue")+
+  theme_minimal() +
+  facet_wrap(~side_of_ball, scales = "free")
+
+test_all %>%
+  filter(num_observations>24) %>%
+  ggplot(aes(x=mean_25))+
+  geom_histogram(color="white",fill="steelblue")+
+  theme_minimal() +
+  facet_wrap(~side_of_ball, scales = "free")
+
+test_all %>%
+  filter(num_observations>49) %>%
+  ggplot(aes(x=mean_25))+
+  geom_histogram(color="white",fill="steelblue")+
+  theme_minimal() +
+  facet_wrap(~side_of_ball, scales = "free")
+
+test_all %>%
+  filter(num_observations>99) %>%
+  ggplot(aes(x=mean_25))+
+  geom_histogram(color="white",fill="steelblue")+
+  theme_minimal() +
+  facet_wrap(~side_of_ball, scales = "free")
+
+test_all %>%
+  filter(num_observations>199) %>%
+  ggplot(aes(x=mean_25))+
+  geom_histogram(color="white",fill="steelblue")+
+  theme_minimal() +
+  facet_wrap(~side_of_ball, scales = "free")
+  
+```
+
+```{r}
+test_all %>%
+  filter(side_of_ball=="Defense" & num_observations>99) %>%
+  ggplot(aes(x=mean_25))+
+  geom_histogram(color="white",fill="steelblue", bins = 10)+
+  theme_minimal() +
+  facet_wrap(~officialPosition, scales = "free")
+
+test_all %>%
+  filter(side_of_ball=="Offense" & num_observations>99) %>%
+  ggplot(aes(x=mean_25))+
+  geom_histogram(color="white",fill="steelblue", bins=10)+
+  theme_minimal() +
+  facet_wrap(~officialPosition, scales = "free")
+
+test_all %>%
+  filter(side_of_ball=="Defense" & num_observations>99) %>%
+  group_by(officialPosition) %>%
+  summarise(mean_elo = mean(mean_25, na.rm = TRUE),
+            sd_elo   = sd(mean_25, na.rm = TRUE),
+            max_elo = max(mean_25, na.rm = TRUE),
+            min_elo = min(mean_25, na.rm = TRUE),
+            median_elo = median(mean_25, na.rm = TRUE))
+
+test_all %>%
+  filter(side_of_ball=="Offense" & num_observations>99) %>%
+  group_by(officialPosition) %>%
+  summarise(mean_elo = mean(mean_25, na.rm = TRUE),
+            sd_elo   = sd(mean_25, na.rm = TRUE),
+            max_elo = max(mean_25, na.rm = TRUE),
+            min_elo = min(mean_25, na.rm = TRUE),
+            median_elo = median(mean_25, na.rm = TRUE))
+```
+
+```{r}
+halflife <- 23
+alpha    <- 1 - exp(log(0.5) / halflife)
+
+rusher_ewma <- elo_history %>%
+  arrange(rusher_nflId, rusher_row) %>%
+  group_by(rusher_nflId) %>%
+  summarise(
+    num_observations = n(),
+    ewma_elo = {
+      series <- stats::filter(after_rusher_elo,
+                              filter = alpha,
+                              method = "recursive",
+                              init   = first(after_rusher_elo))
+      as.numeric(tail(series, 1))
+    }
+  ) %>%
+  ungroup()
+
+blocker_ewma <- elo_history %>%
+  arrange(blocker_nflId, blocker_row) %>%
+  group_by(blocker_nflId) %>%
+  summarise(
+    num_observations = n(),
+    ewma_elo = {
+      series <- stats::filter(after_rusher_elo,
+                              filter = alpha,
+                              method = "recursive",
+                              init   = first(after_rusher_elo))
+      as.numeric(tail(series, 1))
+    }
+  ) %>%
+  ungroup()
+
+rusher_ewma1 <- rusher_ewma %>%
+  left_join(players2 %>% 
+              select(nflId, displayName, officialPosition) %>%
+              mutate(nflId = as.character(nflId)),
+            by = c("rusher_nflId" = "nflId")) %>%
+  arrange(desc(ewma_elo))
+
+rusher_ewma1 %>%
+  filter(num_observations>199)
+```
+
+```{r}
+scale <- 400
+
+df <- elo_history
+
+df <- df %>%
+  mutate(
+    p_block  = 1/(1 + 10^((before_rusher_elo - before_blocker_elo)/scale)),
+    p_rusher = 1 - p_block
+  )
+
+freqs <- df %>%
+  filter(response_mod
+ != "won") %>%
+  count(response_mod
+) %>%
+  mutate(prop = n / sum(n))
+
+df <- df %>%
+  mutate(
+    p_sack   = p_rusher * freqs$prop[freqs$response_mod
+=="sack"],
+    p_hit    = p_rusher * freqs$prop[freqs$response_mod
+=="hit"],
+    p_hurry  = p_rusher * freqs$prop[freqs$response_mod
+=="hurry"],
+    p_beaten = p_rusher * freqs$prop[freqs$response_mod
+=="beaten"],
+    p_won    = p_block
+  )
+df
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# 1) make sure response_mod is a factor in the right order
+df2 <- df %>% 
+  mutate(response_mod = factor(response_mod,
+                               levels = c("sack","hit","hurry","beaten","won")))
+
+# 2) pivot only the five prediction columns into long form
+per_class_loss <- df2 %>%
+  pivot_longer(
+    cols      = c(p_sack, p_hit, p_hurry, p_beaten, p_won),
+    names_to  = "prob_col",
+    values_to = "prob"
+  ) %>%
+  # strip off the "p_" to get the class name
+  mutate(class = sub("^p_", "", prob_col)) %>%
+  # 3) compute –mean(log p) within each class only for the rows whose truth==class
+  group_by(class) %>%
+  summarise(
+    n              = n(),
+    class_logloss  = -mean(if_else(response_mod == class,
+                                   log(prob),
+                                   NA_real_),
+                           na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# 4) compute the single overall log-loss
+overall_loss <- df2 %>%
+  mutate(
+    # pick the log‐prob corresponding to the true outcome
+    logloss = case_when(
+      response_mod == "sack"   ~ -log(p_sack),
+      response_mod == "hit"    ~ -log(p_hit),
+      response_mod == "hurry"  ~ -log(p_hurry),
+      response_mod == "beaten" ~ -log(p_beaten),
+      response_mod == "won"    ~ -log(p_won),
+      TRUE                     ~ NA_real_
+    )
+  ) %>%
+  summarise(overall_logloss = mean(logloss, na.rm = TRUE))
+
+# Inspect
+per_class_loss
+overall_loss
+```
+
+```{r}
+scale <- 400
+
+df_binary <- elo_history %>%
+  mutate(
+    p_block  = 1 / (1 + 10^((before_rusher_elo - before_blocker_elo) / scale)),
+    p_rusher = 1 - p_block)
+
+
+
+
+
+df_binary2 <- df_binary %>%
+  mutate(
+    response_modded = factor(ifelse(response_mod == "won", "won", "loss"))
+  ) %>%
+  rename(
+    .pred_won  = p_block
+  )
+
+df_binary2 %>%
+  mn_log_loss(
+    truth = response_modded,
+    .pred_won,
+  )
+```
+
+```{r}
+adaptive_K_logistic <- function(n,
+                                K_start = 40,
+                                K_min   = 20,
+                                n_mid   = 100,
+                                steep   = 0.05) { 
+  range <- K_start - K_min
+  K_min + range / (1 + exp((n - n_mid) * steep))
+}
+
+adaptive_K_hyp <- function(n, K_start=40, K_min=20, n_decay=200) {
+  # K = K_start / (1 + (n-1)/n_decay), then shift so it bottoms at K_min:
+  raw  <- K_start / (1 + (n-1)/n_decay)
+  shift <- raw[1] - K_start
+  pmax(raw - shift, K_min)
+}
+
+adaptive_K <- function(n, K_start = 40, K_min = 20, n_decay = 200) {
+  val <- K_min + (K_start - K_min) * exp(-(n - 1) / n_decay)
+  pmax(val, K_min)
+}
+
+adaptive_K_lin <- function(n, K_start=40, K_min=20, n_decay=200) {
+  val <- K_start - (K_start - K_min) * ((n-1) / n_decay)
+  pmax(val, K_min)
+}
+
+N <- seq(1:200)
+
+y_log <- adaptive_K_logistic(N)
+y_lin <- adaptive_K_lin(N)
+y_hyp <- adaptive_K_hyp(N)
+y_exp <- adaptive_K(N)
+
+
+
+plot(y_log)
+plot(y_lin)
+plot(y_hyp)
+plot(y_exp)
+```
+
+```{r}
+library(dplyr)
+library(Matrix)
+
+# ---- 1) build a little df with just the columns we need ----
+df <- interactions_pr_1 %>%
+  select(
+    blocker_nflId,
+    rusher_nflId,
+    n_blockers_for_rusher,
+    response_mod
+  ) %>%
+  mutate(response_mod=factor(response_mod))
+
+# ---- 2) force a common factor level‐set for one‐hots ----
+all_ids <- sort(unique(c(df$blocker_nflId, df$rusher_nflId)))
+df2 <- df %>%
+  mutate(
+    blk_f = factor(blocker_nflId, levels = all_ids),
+    rus_f = factor(rusher_nflId,  levels = all_ids)
+  )
+
+# ---- 3) build sparse one-hot matrices and subtract ----
+blk_mat  <- sparse.model.matrix(~ 0 + blk_f, df2)
+rush_mat <- sparse.model.matrix(~ 0 + rus_f, df2)
+X_bt     <- blk_mat - rush_mat
+
+# ---- 4) tack on your numeric feature ----
+X_bt <- cbind(
+  X_bt,
+  n_blockers_for_rusher = df2$n_blockers_for_rusher
+)
+
+# ---- 5) pull out your response ----
+y_bt <- df2$response_mod
+
+# ---- 6) package into a data.frame and fit a logistic model ----
+new_data <- data.frame(
+  response_mod = y_bt,
+  as.matrix(X_bt)    # glm() wants a dense data.frame
+)
+
+head(new_data)
+```
+
+```{r}
+X_rig <- sparse.model.matrix(
+  response_mod ~ .,
+  data = new_data
+)[,-1]
+class_levels <- c("sack", "hit", "hurry", "beaten", "won")
+y01 <- as.integer(factor(y_bt, levels = class_levels)) - 1
+```
+
+```{r}
+library(glmnet)
+library(doParallel)
+
+lambda_seq <- 10^seq(-4, 0, length.out = 50)
+
+cv_ridge <- cv.glmnet(
+  X_rig, y01,
+  family           = "multinomial",
+  alpha            = 0,
+  lambda           = lambda_seq,
+  nfolds           = 3,
+  control          = list(maxit = 1e6)
+)
+
+best_lambda <- cv_ridge$lambda.min
+
+fit_ridge <- glmnet(
+  X_rig, y01,
+  family = "multinomial",
+  alpha = 0,
+  lambda = best_lambda,
+  maxit = 1e6
+)
+```
+
+```{r}
+library(glmnet)
+library(tibble)
+library(dplyr)
+library(yardstick)
+
+# assume you already have:
+#  • class_levels  = c("sack","hit","hurry","beaten","won")
+#  • X_bt          = your sparse model matrix (n × K)
+#  • y_bt          = factor vector of length n with those same levels
+#  • fit_ridge     = your glmnet fit (family="multinomial")
+#  • best_lambda   = the λ you chose (e.g. cv_ridge$lambda.min)
+
+# 1.  predict probabilities at the chosen λ
+#    `predict(..., type="response", s=best_lambda)` returns an array n × K × 1
+probs_array <- predict(
+  fit_ridge,
+  newx = X_rig,
+  s     = best_lambda,
+  type  = "response"
+)
+
+# drop the singleton 3rd dimension → n × K matrix
+probs_mat <- probs_array[,,1]
+
+# 2.  assemble a tibble for evaluation
+df_pred <- tibble(
+  truth = factor(y_bt, levels = class_levels)
+) %>% 
+  bind_cols(as_tibble(probs_mat)) %>% 
+  rename_with(~ class_levels, everything()[ -1 ]) 
+  # now df_pred has columns: truth, sack, hit, hurry, beaten, won
+
+# 3.  multiclass log‐loss
+mlog <- df_pred %>%
+  mn_log_loss(
+    truth,
+    sack, hit, hurry, beaten, won
+  )
+
+print(mlog)
+```
+
+```{r}
+
+# 1) compute the empirical distribution of non-won outcomes in your training set
+freqs <- interactions_pr_1 %>% 
+  filter(response_mod != "won") %>% 
+  count(response_mod) %>% 
+  mutate(prop = n / sum(n))
+# freqs$response_mod  == c("sack","hit","hurry","beaten")
+
+# 2) start from your BT prediction tibble df_pred:
+#    it has columns: truth, sack, hit, hurry, beaten, won
+df_bt_adj <- df_pred %>% 
+  rename(p_won = won) %>% 
+  mutate(
+    # leftover probability mass after P(won)
+    p_non_won = 1 - p_won,
+    # redistribute according to empirical props
+    p_sack   = p_non_won * freqs$prop[freqs$response_mod == "sack"],
+    p_hit    = p_non_won * freqs$prop[freqs$response_mod == "hit"],
+    p_hurry  = p_non_won * freqs$prop[freqs$response_mod == "hurry"],
+    p_beaten = p_non_won * freqs$prop[freqs$response_mod == "beaten"]
+  ) %>% 
+  # now drop the old prob columns and make sure names match the levels exactly
+  select(
+    truth,
+    sack   = p_sack,
+    hit    = p_hit,
+    hurry  = p_hurry,
+    beaten = p_beaten,
+    won    = p_won
+  )
+
+# 3) compute the multinomial log‐loss
+bt_mm_logloss_empirical <- df_bt_adj %>% 
+  mn_log_loss(
+    truth,   # your true factor, must have levels c("sack","hit","hurry","beaten","won")
+    sack,    # unquoted names matching those levels
+    hit,
+    hurry,
+    beaten,
+    won
+  )
+
+bt_mm_logloss_empirical
+```
+```{r}
+library(dplyr)
+library(yardstick)   # for mn_log_loss()
+
+# 1) empirical distribution of non-won outcomes
+freqs <- interactions_pr_1 %>% 
+  filter(response_mod != "won") %>% 
+  count(response_mod) %>% 
+  mutate(prop = n / sum(n))
+# ensure the order is c("sack","hit","hurry","beaten")
+freqs
+
+# 2) starting from your BT prediction tibble (truth, sack, hit, hurry, beaten, won)
+df_bt_adj <- df_pred %>% 
+  rename(p_won = won) %>% 
+  mutate(
+    # leftover mass
+    p_non_won = 1 - p_won,
+    # redistribute
+    p_sack   = p_non_won * freqs$prop[freqs$response_mod == "sack"],
+    p_hit    = p_non_won * freqs$prop[freqs$response_mod == "hit"],
+    p_hurry  = p_non_won * freqs$prop[freqs$response_mod == "hurry"],
+    p_beaten = p_non_won * freqs$prop[freqs$response_mod == "beaten"]
+  ) %>% 
+  # now select + rename to match your five levels exactly
+  select(
+    truth,
+    sack   = p_sack,
+    hit    = p_hit,
+    hurry  = p_hurry,
+    beaten = p_beaten,
+    won    = p_won
+  )
+
+# 3) compute the multinomial log-loss
+bt_mm_logloss_empirical <- df_bt_adj %>% 
+  mn_log_loss(
+    truth,       # factor with levels c("sack","hit","hurry","beaten","won")
+    sack, hit, hurry, beaten, won
+  )
+
+bt_mm_logloss_empirical
+```
+
+```{r}
+bt_fit <- glm(
+  binary_response ~ .,
+  data   = new_data,
+  family = binomial()
+)
+```
+
+```{r}
+source("/Users/maximiliangebauer/Downloads/get_nfl_player_contract_by_season.R")
+```
+
+```{r}
+get_nfl_player_contract_by_season(years==2021)
+```
+
+
 
 
 
