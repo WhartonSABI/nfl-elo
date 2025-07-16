@@ -19,24 +19,32 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
                sandwich)
 ```
 
+Read in data
 ```{r}
 #read in ten sample games data
-new_data <- fread("../../nfl_data/10_sample_games.csv")
+new_data <- fread("../../nfl_data/five_weeks_hudl_data.csv")
 ```
 
 ```{r}
 names(new_data)
 head(new_data)
 ```
+Filter 
+```{r}
+matchups <- new_data %>% 
+  select(freeze_frame_player, event_player_name, opponent_player_name, event_uuid, event_game_index, game_id, play_uuid, player_id,  time_since_snap,opponent_player_id,  freeze_frame_player_id, event_types, event_x, event_y, start_engagement_uuid, end_engagement_uuid, play_start_event, time_since_snap, freeze_frame_x, freeze_frame_y, event_player_position, freeze_frame_player_id, freeze_frame_position, freeze_frame_player_team, nflfast_game_id)
 
+```
+
+Add the freeze frame of opponent players and qb in matchups to data 
 ```{r}
 
-matchups <- new_data 
-  
+matchups <- new_data
+
 matchup_tracking <- matchups %>%
   left_join(
     matchups %>% 
-      select(game_id, play_uuid, time_since_snap, freeze_frame_player_id, freeze_frame_x, freeze_frame_y, freeze_frame_player) %>% 
+      select(game_id, play_uuid, time_since_snap, freeze_frame_player_id, freeze_frame_x, freeze_frame_y, freeze_frame_player, event_game_index) %>% 
       rename(
         opponent_player_id = freeze_frame_player_id,
         x_opp = freeze_frame_x,
@@ -45,7 +53,7 @@ matchup_tracking <- matchups %>%
       ),
     by = c("game_id", "play_uuid", "time_since_snap", "opponent_player_id")
   )
-  
+
 matchup_tracking_with_qb <- matchups %>%
   left_join(
     matchups %>%
@@ -59,22 +67,16 @@ matchup_tracking_with_qb <- matchups %>%
     by = c("game_id", "play_uuid", "time_since_snap")
   )
 
-
-
-```
-```{r}
-#get start and end frame insights
-unique(new_data$freeze_frame_position)
 ```
 
+Make table with engagement start and end times
 ```{r}
-#make table with just engagement start and ends
 engagements <- matchup_tracking_with_qb %>% 
   filter(event_types %in% c("{\"\"\"\"Engagement Start\"\"\"\"}"  , "{\"\"\"\"Engagement End\"\"\"\"}", "{Pass}" , "{Pass,Hit}"))
 
 ```
 
-
+Identify rusher and blocker and put engagement start and end in columns
 ```{r}
 #make table with each 
 matchups_all <- engagements %>%
@@ -85,7 +87,7 @@ matchups_all <- engagements %>%
       "{Pass}", "{Pass,Hit}"
     )
   ) %>%
-  arrange(play_uuid, event_uuid, player_id, opponent_player_id, event_types) %>%
+  arrange(play_uuid, event_game_index, player_id, opponent_player_id, event_types) %>%
   #filter(player_position %in% c("Defensive Lineman", "Linebacker")) %>%  # only keep defenders
   group_by(play_uuid, player_id, opponent_player_id) %>%
   summarize(
@@ -111,6 +113,7 @@ matchups_all <- engagements %>%
 
 ```
 
+Find pass times and add to table
 ```{r}
 #get pass times
 pass_times <- engagements %>%
@@ -122,6 +125,7 @@ matchups_all <- matchups_all %>%
   left_join(pass_times, by = "play_uuid")
 ```
 
+Add a column to each engagement with each play nested in that row's entry
 ```{r}
 #prepare engagements table to iterate through frames in a play
 play_tracking <- engagements %>%
@@ -133,6 +137,7 @@ matchups_all_nested <- matchups_all %>%
   left_join(play_tracking, by = "play_uuid")
 ```
 
+Apply pass block win function based on euclidean distance
 ```{r}
 
 #function to calculate pass block win
@@ -212,7 +217,7 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking, game_id,
         blocker_name = blocker,
         beat_time    = as.numeric(wide_rb$time_since_snap[idx[1]]),
         beat_dist    = as.numeric(d_r[idx[1]]),
-        rusher_won   = 0L
+        blocker_won   = 0L
       )
     } else {
       tibble(
@@ -222,7 +227,7 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking, game_id,
         blocker_name = blocker,
         beat_time    = NA_real_,
         beat_dist    = NA_real_,
-        rusher_won   = 1L
+        blocker_won   = 1L
       )
     }
 
@@ -253,12 +258,22 @@ results2 <- pmap_dfr(
 )
 ```
 
+Cleaning
 ```{r}
 results_cleaned <- results2 %>% 
   drop_na(game_id, rusher_name, blocker_name) %>% 
   arrange(game_id, play_id)
+
+init_play_ratings <- results_cleaned %>%
+  select(rusher_name, blocker_name) %>%
+  pivot_longer(everything(), names_to = "type", values_to = "player_name") %>%
+  mutate(Player_Elo = ifelse(type == "rusher_name", 900, 1100)) %>%  
+  distinct(player_name, .keep_all = TRUE)
+
+elo_vec <- setNames(init_play_ratings$Player_Elo, init_play_ratings$player_name)
 ```
 
+Elo function
 ```{r}
 K <- 32
 scale <- 400
@@ -272,53 +287,54 @@ elo_step <- function(belo, relo, outcome) {
 }
 
 get_elo <- function(id) {
-  if (!id %in% names(elo_vec)) elo_vec[[as.character(id)]] <<- 1000
-  elo_vec[[as.character(id)]]
+  id <- as.character(id)  
+  if (!id %in% names(elo_vec)) elo_vec[[id]] <- 1000
+  return(elo_vec[[id]])
 } 
 
 ```
 
+
 ```{r}
 
-results_cleaned = as.data.table(results_cleaned)
-interaction_counts <- list() #initialize to count number of interactions for player
-
-elo_history <- results_cleaned [
-  , .(game_id, play_id, rusher_name, blocker_name, rusher_won, 
-      before_blocker_elo = NA_real_,
-      before_rusher_elo  = NA_real_,
-      after_blocker_elo  = NA_real_,
-      after_rusher_elo   = NA_real_,
-      elo_history$blocker_n <- NA_integer_,
-      elo_history$rusher_n <- NA_integer_
+results_cleaned <- as.data.table(results_cleaned)
+interaction_counts <- list()  # Initialize interaction count
+elo_history <- results_cleaned %>%
+  mutate(
+    before_rusher_elo = NA_real_,
+    before_blocker_elo = NA_real_,
+    after_rusher_elo = NA_real_,
+    after_blocker_elo = NA_real_, 
+    rusher_n = NA_integer_,
+    blocker_n = NA_integer_
   )
-]
 
 for (i in seq_len(nrow(elo_history))) {
+  r_id <- elo_history$rusher_name[i]
+  b_id <- elo_history$blocker_name[i]
+  out  <- elo_history$rusher_won[i]
 
-  b_id <- elo_history$blocker_name[i]  # or blocker_id if using ID
-  r_id <- elo_history$rusher_name[i]   # or rusher_id
-  out  <- elo_history$rusher_won[i]    # this is your outcome
+  if (is.na(r_id) || is.na(b_id) || is.na(out)) next
 
-  b_elo <- get_elo(b_id)
   r_elo <- get_elo(r_id)
+  b_elo <- get_elo(b_id)
 
-  elo_history$before_blocker_elo[i] <- b_elo
   elo_history$before_rusher_elo[i]  <- r_elo
+  elo_history$before_blocker_elo[i] <- b_elo
   
-  interaction_counts[[r_id]] <- (interaction_counts[[r_id]] %||% 0L) + 1L
-  interaction_counts[[b_id]] <- (interaction_counts[[b_id]] %||% 0L) + 1L
+  interaction_counts[[r_id]] <- if (is.null(interaction_counts[[r_id]])) 1L else interaction_counts[[r_id]] + 1L
+  interaction_counts[[b_id]] <- if (is.null(interaction_counts[[b_id]])) 1L else interaction_counts[[b_id]] + 1L
 
-  elo_history$blocker_n[i] <- interaction_counts[[b_id]]
   elo_history$rusher_n[i]  <- interaction_counts[[r_id]]
+  elo_history$blocker_n[i] <- interaction_counts[[b_id]]
 
   new <- elo_step(b_elo, r_elo, out)
 
-  elo_history$after_blocker_elo[i] <- new["b"]
-  elo_history$after_rusher_elo[i]  <- new["r"]
-
-  elo_vec[[b_id]] <- new["b"]
   elo_vec[[r_id]] <- new["r"]
+  elo_vec[[b_id]] <- new["b"]
+
+  elo_history$after_rusher_elo[i]  <- new["r"]
+  elo_history$after_blocker_elo[i] <- new["b"]
 }
 ```
 
@@ -380,6 +396,7 @@ elo_top <- elo_long %>%
   filter(player_name %in% top_players)
 ```
 
+
 ```{r}
 elo_top_rusher <- elo_top %>% filter(role == "Rusher")
 elo_top_blocker <- elo_top %>% filter(role == "Blocker")
@@ -403,5 +420,13 @@ ggplot(elo_top_blocker, aes(x = as.numeric(interaction_n), y = elo, color = play
     color = "Rusher"
   ) +
   theme_minimal()
+```
+Load in BDB data for comparison
+```{r}
+#bdb_data <- fread("../../nfl_data/big_data_bowl_2023_AllWeeks.csv")
+#head(bdb_data)
+```
+```{r}
+
 ```
 
