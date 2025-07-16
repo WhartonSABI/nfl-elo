@@ -1,0 +1,682 @@
+---
+title: "learning_rate_tune"
+author: "Maximilian J. Gebauer"
+date: "2025-07-08"
+output: html_document
+---
+
+```{r Setup, include=FALSE, results='hide', warning=FALSE}
+knitr::opts_chunk$set(echo = T, fig.width=8, fig.height=4)
+options(scipen = 0, digits = 6)  # controls base R output
+
+# Package setup
+if(!require("pacman")) install.packages("pacman")
+
+#pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
+               #GGally, RColorBrewer, ggsci, plotROC, usmap,
+               #plotly, ggpubr, vistime, coefplot, skimr, car, ggrepel, slider, lubridate,
+               #tidymodels,ranger,vip,ggplot2, tune, dials, pdp, purrr, stringr, lmtest,
+               #sandwich,slider, yardstick)
+
+## ── core data wrangling ─────────────────────────────────────────────
+library(data.table)   # fread(), setDT(), keyed sub-setting
+library(dplyr)        # mutate(), case_when(), transmute(), filter(), group_by()
+library(tidyr)        # pivot_longer()
+library(purrr)        # pmap_dfr()
+library(stringr)      # str_* helpers (if any later)
+
+## ── modelling & tuning stack ────────────────────────────────────────
+library(tidymodels)   # broom, dials, parsnip, rsample, tune, workflows, yardstick
+#  ↳ brings in:
+#      dials::numeric_param(), integer_param()
+#      tune::bayes_opt(), control_bayes()
+#      rsample::initial_split()  (if you ever switch to it)
+#      yardstick metrics         (not used directly but often handy)
+
+## ── parallel execution ──────────────────────────────────────────────
+library(future)       # plan(), availableCores()
+library(furrr)        # future_pmap(), etc.
+
+## ── glue for logging / printing ─────────────────────────────────────
+library(glue)         # glue()
+
+## ── dates (only if you use them elsewhere) ─────────────────────────
+library(lubridate)    # optional, but you loaded it earlier
+```
+
+```{r}
+full_data <- data.table::fread("/Users/maximiliangebauer/Downloads/big_data_bowl_2023_AllWeeks.csv")
+
+players2 <- data.table::fread("/Users/maximiliangebauer/Downloads/players-2.csv")
+```
+
+```{r}
+full_data <- full_data %>%
+  mutate(
+    response = case_when(
+      pff_sackAllowed      == 1 ~ "sack",
+      pff_hitAllowed       == 1 ~ "hit",
+      pff_hurryAllowed     == 1 ~ "hurry",
+      pff_beatenByDefender == 1 ~ "beaten",
+      pff_beatenByDefender == 0 &
+        is.na(pff_sackAllowed) &
+        is.na(pff_hitAllowed) &
+        is.na(pff_hurryAllowed) ~ "won",
+      pff_beatenByDefender == 0 &
+        pff_sackAllowed == 0 & pff_hitAllowed == 0 & pff_hurryAllowed == 0 ~ "won",
+      TRUE ~ NA_character_
+    )
+  )
+
+pass_rusher_positions <- c("DE","DT","OLB","ILB","NT","SS","DB","LB","MLB","FS","CB")
+
+
+init_play_ratings <- players2 %>%
+  transmute(
+    nflId            = as.character(nflId),
+    displayName,
+    officialPosition,
+    Defense          = officialPosition %in% pass_rusher_positions,
+    Offense          = officialPosition %in% c("C","G","T","TE","FB","WR","RB","QB"),
+    Player_Elo       = ifelse(Defense, 800, 1200)
+  )
+
+valid_rushers <- init_play_ratings %>%
+  filter(Defense) %>%
+  pull(nflId)
+
+
+interactions_pr <- full_data %>%
+  filter(!is.na(pff_nflIdBlockedPlayer)) %>%
+  filter(!is.na(response)) %>%  
+  transmute(
+    gameId,
+    playId,
+    blocker_nflId = as.character(nflId),
+    rusher_nflId  = as.character(pff_nflIdBlockedPlayer),
+    outcome       = response
+  ) %>%
+  distinct() %>%                        # <<< deduplicate frames!
+  filter(rusher_nflId %in% valid_rushers)
+penalties_long <- full_data %>%
+  select(gameId, playId,
+         foulName1, foulNFLId1,
+         foulName2, foulNFLId2,
+         foulName3, foulNFLId3) %>%
+  pivot_longer(
+    cols = starts_with("foul"),
+    names_to = c(".value", "penalty_num"),
+    names_pattern = "(foulName|foulNFLId)([123])"
+  ) %>%
+  rename(
+    penalty_name = foulName,
+    penalty_id   = foulNFLId
+  ) %>%
+  filter(!is.na(penalty_id)) %>%
+  mutate(penalty_id = as.character(penalty_id))
+
+rusher_penalties <- penalties_long %>%
+  group_by(gameId, playId, rusher_nflId = penalty_id) %>%
+  arrange(penalty_num) %>%
+  summarise(
+    rusher_penalty1 = penalty_name[penalty_num == "1"][1],
+    rusher_penalty2 = penalty_name[penalty_num == "2"][1],
+    rusher_penalty3 = penalty_name[penalty_num == "3"][1],
+    .groups = "drop"
+  )
+
+blocker_penalties <- penalties_long %>%
+  group_by(gameId, playId, blocker_nflId = penalty_id) %>%
+  arrange(penalty_num) %>%
+  summarise(
+    blocker_penalty1 = penalty_name[penalty_num == "1"][1],
+    blocker_penalty2 = penalty_name[penalty_num == "2"][1],
+    blocker_penalty3 = penalty_name[penalty_num == "3"][1],
+    .groups = "drop"
+  )
+
+interactions_pr <- interactions_pr %>%
+  left_join(rusher_penalties,  by = c("gameId", "playId", "rusher_nflId")) %>%
+  left_join(blocker_penalties, by = c("gameId", "playId", "blocker_nflId"))
+
+setDT(interactions_pr)
+
+elo_vec <- setNames(init_play_ratings$Player_Elo, init_play_ratings$nflId)
+
+block_pens <- c("Offensive Holding", "Illegal Use of Hands", "Chop Block", "Face Mask (15 Yards)", "Clipping") 
+rush_pens <- c("Illegal Use of Hands", "Face Mask (15 Yards)", "Defensive Holding")
+
+interactions_pr <- interactions_pr %>%
+  mutate(
+    blocker_penalty1 = ifelse(blocker_penalty1 %in% block_pens,blocker_penalty1,NA_character_),
+    blocker_penalty2 = ifelse(blocker_penalty2 %in% block_pens,blocker_penalty2,NA_character_),
+    blocker_penalty3 = ifelse(blocker_penalty3 %in% block_pens,blocker_penalty3,NA_character_),
+    rusher_penalty1 = ifelse(rusher_penalty1 %in% rush_pens, rusher_penalty1, NA_character_),
+    rusher_penalty2 = ifelse(rusher_penalty2 %in% rush_pens, rusher_penalty2, NA_character_),
+    rusher_penalty3 = ifelse(rusher_penalty3 %in% rush_pens, rusher_penalty3, NA_character_),
+  )
+
+interactions_pr <- interactions_pr %>%
+  group_by(gameId,playId, rusher_nflId) %>%
+  mutate(n_blockers_for_rusher = n()) %>%
+  ungroup()
+
+interactions_pr <- interactions_pr %>%
+  mutate(
+    rusher_penalty = if_any(starts_with("rusher_penalty"), ~ !is.na(.)),
+    blocker_penalty = if_any(starts_with("blocker_penalty"), ~ !is.na(.)),
+    response_mod = case_when(
+      rusher_penalty & !blocker_penalty & outcome == "sack"   ~ "hit",
+      rusher_penalty & !blocker_penalty & outcome == "hit"    ~ "hurry",
+      rusher_penalty & !blocker_penalty & outcome == "hurry"  ~ "beaten",
+      rusher_penalty & !blocker_penalty & outcome == "beaten" ~ "won",
+      rusher_penalty & !blocker_penalty & outcome == "won"    ~ "won",
+      blocker_penalty & !rusher_penalty & outcome == "won"    ~ "beaten",
+      blocker_penalty & !rusher_penalty & outcome == "beaten" ~ "hurry",
+      blocker_penalty & !rusher_penalty & outcome == "hurry"  ~ "hit",
+      blocker_penalty & !rusher_penalty & outcome == "hit"    ~ "sack",
+      blocker_penalty & !rusher_penalty & outcome == "sack"   ~ "sack",
+      rusher_penalty & blocker_penalty                        ~ outcome,
+      TRUE                                                    ~ outcome
+    )
+  ) %>%
+  select(-rusher_penalty, -blocker_penalty)
+```
+
+```{r}
+interactions_pr_1 <- interactions_pr
+
+elo_vec_1 <- elo_vec
+
+interactions_pr_1 <- interactions_pr_1 %>%
+  group_by(rusher_nflId) %>%
+  mutate(rusher_row = row_number()) %>%
+  ungroup() %>%
+  group_by(blocker_nflId) %>%
+  mutate(blocker_row = row_number()) %>%
+  ungroup()
+
+adaptive_K_prov <- function(n,
+                            K_start = 20,
+                            K_min   = 10,
+                            n_prov  = 50,
+                            n_decay = 100) {
+  k <- ifelse(
+    n <= n_prov,
+    K_min,
+    ifelse(
+      n <= n_decay,
+      K_start + (K_min - K_start) * (n - n_prov) / (n_decay - n_prov),
+      K_min
+    )
+  )
+  pmax(k, K_min)
+}
+interactions_pr_1 <- interactions_pr_1 %>%
+  group_by(rusher_nflId) %>%
+    mutate(rusher_k  = adaptive_K_prov(rusher_row,
+                                      K_start = 20,
+                                      K_min   = 10,
+                                      n_prov  = 50,
+                                      n_decay = 100)) %>%
+  ungroup() %>%
+  group_by(blocker_nflId) %>%
+    mutate(blocker_k = adaptive_K_prov(blocker_row,
+                                      K_start = 20,
+                                      K_min   = 10,
+                                      n_prov  = 50,
+                                      n_decay = 100)) %>%
+  ungroup()
+
+interactions_pr_1 <- interactions_pr_1 %>%
+  select(-c(rusher_penalty3,blocker_penalty3))
+
+setDT(interactions_pr_1)
+
+interactions_pr_1 <- interactions_pr_1[
+  order(gameId, playId)             
+][
+  , .SD[1],                         
+  by = .(gameId, playId, blocker_nflId, rusher_nflId)
+][
+  , row_id := .I                    
+]
+
+
+all_ids <- unique(c(interactions_pr_1$blocker_nflId, interactions_pr_1$rusher_nflId))
+
+
+rushers  <- unique(interactions_pr_1$rusher_nflId)
+blockers <- unique(interactions_pr_1$blocker_nflId)
+
+
+elo_vec_1 <- setNames(
+  ifelse(all_ids %in% rushers, 800, 1200),
+  all_ids
+)
+
+
+get_elo <- function(id) {
+  if (!id %in% names(elo_vec_1)) {
+    elo_vec_1[[id]] <<- 1000               
+  }
+  elo_vec_1[[id]]
+}
+
+elo_outcome_value <- function(response_mod) {
+  case_when(
+    response_mod == "won"    ~ 1,
+    response_mod == "beaten"  ~ 0.7,
+    response_mod == "hurry"    ~ 0.55,
+    response_mod == "hit" ~ 0.45,
+    response_mod == "sack"   ~ 0
+  )
+}
+
+## --- 1.  hyper-parameter ---------------------------------------------
+halflife <- 30                            # plays; tune this later
+alpha    <- 1 - exp(log(0.5) / halflife)  # EWMA weight
+
+## --- 2.  initialise two vectors --------------------------------------
+all_ids <- unique(c(interactions_pr_1$blocker_nflId,
+                    interactions_pr_1$rusher_nflId))
+
+rushers  <- unique(interactions_pr_1$rusher_nflId)
+raw_elo     <- setNames(ifelse(all_ids %in% rushers,  800, 1200), all_ids)
+smooth_elo  <- raw_elo                                # start equal
+
+## --- 3.  helper -------------------------------------------------------
+elo_step <- function(belo, relo, outcome, bK, rK,
+                     n_blockers_for_rusher = 1, scale = 400) {
+  res_val <- elo_outcome_value(outcome)
+  if (is.na(res_val)) return(c(b = belo, r = relo))          # no change
+
+  adj_belo   <- belo + 100 * log2(n_blockers_for_rusher)     # bonus
+  expect_blk <- 1 / (1 + 10 ^ ((relo - adj_belo) / scale))
+
+  c(
+    b = belo + bK * ( res_val        - expect_blk),
+    r = relo + rK * ((1 - res_val)   - (1 - expect_blk))
+  )
+}
+
+## --- 4.  prep history table ------------------------------------------
+elo_history <- interactions_pr_1[
+  , .(gameId, playId, row_id,
+      blocker_nflId, rusher_nflId, response_mod,
+      rusher_row, blocker_row,
+      blocker_k, rusher_k, n_blockers_for_rusher,
+      before_blocker_raw   = NA_real_,   before_blocker_sm  = NA_real_,
+      before_rusher_raw    = NA_real_,   before_rusher_sm   = NA_real_,
+      after_blocker_raw    = NA_real_,   after_blocker_sm   = NA_real_,
+      after_rusher_raw     = NA_real_,   after_rusher_sm    = NA_real_)
+]
+
+## --- 5.  main loop ----------------------------------------------------
+for (i in seq_len(nrow(elo_history))) {
+
+  b_id <- elo_history$blocker_nflId[i]
+  r_id <- elo_history$rusher_nflId[i]
+  out  <- elo_history$response_mod[i]
+  bK   <- elo_history$blocker_k[i]
+  rK   <- elo_history$rusher_k[i]
+  nblk <- elo_history$n_blockers_for_rusher[i]
+
+  # ratings *used for the probability* are the SMOOTHED ones
+  b_sm <- smooth_elo[[b_id]]
+  r_sm <- smooth_elo[[r_id]]
+
+  # store "before" snapshots
+  elo_history[i,
+    `:=`(before_blocker_raw = raw_elo[[b_id]],
+         before_blocker_sm  = b_sm,
+         before_rusher_raw  = raw_elo[[r_id]],
+         before_rusher_sm   = r_sm)
+  ]
+
+  # update the RAW Elo values
+  new_raw <- elo_step(raw_elo[[b_id]], raw_elo[[r_id]],
+                      out, bK, rK,
+                      n_blockers_for_rusher = nblk)
+
+  raw_elo[[b_id]] <- new_raw["b"]
+  raw_elo[[r_id]] <- new_raw["r"]
+
+  # one-step EWMA smoothing
+  smooth_elo[[b_id]] <- (1 - alpha) * b_sm + alpha * raw_elo[[b_id]]
+  smooth_elo[[r_id]] <- (1 - alpha) * r_sm + alpha * raw_elo[[r_id]]
+
+  # store the "after" snapshots
+  elo_history[i,
+    `:=`(after_blocker_raw = raw_elo[[b_id]],
+         after_blocker_sm  = smooth_elo[[b_id]],
+         after_rusher_raw  = raw_elo[[r_id]],
+         after_rusher_sm   = smooth_elo[[r_id]])
+  ]
+}
+
+scale <- 400          # same logistic scale you use in elo_step
+df    <- elo_history  # has *_raw and *_sm columns now
+
+## proportions of non-“won” outcomes (same for both rating types)
+freqs <- df %>% 
+  filter(response_mod != "won") %>% 
+  count(response_mod) %>% 
+  mutate(prop = n / sum(n))
+
+## -------- helper that does one rating flavour ------------------------
+calc_loss <- function(data, flavour = c("raw", "sm")) {
+  flavour <- match.arg(flavour)
+  
+  # pick the right column names
+  b_col <- paste0("before_blocker_", flavour)
+  r_col <- paste0("before_rusher_" , flavour)
+  
+  tmp <- data %>% 
+    mutate(
+      p_block  = 1 / (1 + 10 ^ ((.data[[r_col]] - .data[[b_col]]) / scale)),
+      p_rusher = 1 - p_block,
+      p_sack   = p_rusher * freqs$prop[freqs$response_mod == "sack"],
+      p_hit    = p_rusher * freqs$prop[freqs$response_mod == "hit"],
+      p_hurry  = p_rusher * freqs$prop[freqs$response_mod == "hurry"],
+      p_beaten = p_rusher * freqs$prop[freqs$response_mod == "beaten"],
+      p_won    = p_block,
+      response_mod = factor(response_mod,
+                            levels = c("sack","hit","hurry","beaten","won"))
+    )
+  
+  ## per-class log-loss
+  per_class <- tmp %>% 
+    pivot_longer(
+      cols      = starts_with("p_"),
+      names_to  = "prob_col",
+      values_to = "prob"
+    ) %>% 
+    mutate(class = sub("^p_", "", prob_col)) %>% 
+    group_by(class) %>% 
+    summarise(
+      n             = n(),
+      class_logloss = -mean(if_else(response_mod == class,
+                                    log(prob), NA_real_), na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  ## overall
+  overall <- tmp %>% 
+    mutate(
+      logloss = case_when(
+        response_mod == "sack"   ~ -log(p_sack),
+        response_mod == "hit"    ~ -log(p_hit),
+        response_mod == "hurry"  ~ -log(p_hurry),
+        response_mod == "beaten" ~ -log(p_beaten),
+        response_mod == "won"    ~ -log(p_won)
+      )
+    ) %>% 
+    summarise(overall_logloss = mean(logloss, na.rm = TRUE))
+  
+  list(per_class = per_class, overall = overall)
+}
+
+## -------- run for RAW and SMOOTHED ratings --------------------------
+loss_raw <- calc_loss(df, "raw")
+loss_sm  <- calc_loss(df, "sm")
+
+## inspect
+loss_raw$overall
+loss_sm$overall
+loss_raw$per_class
+loss_sm$per_class
+```
+
+```{r}
+get_rating <- function(v, id, default) {
+  r <- v[id]                # safe lookup; returns NA if not present
+  if (is.na(r)) default else r
+}
+```
+
+```{r}
+############################################################################
+#  PACKAGES (minimal, explicit)
+############################################################################
+library(data.table);  library(dplyr);  library(tidyr)
+library(purrr);       library(tibble); library(dials)
+library(future);      library(furrr);  library(readr);  library(glue)
+
+plan(multisession, workers = future::availableCores())
+
+############################################################################
+# 1 · parameter-constructor helpers  (use ONLY new_quant_param)
+############################################################################
+make_num <- function(id, range) {
+  p <- dials::new_quant_param(type = "double",  range = range, inclusive = c(TRUE, TRUE))
+  p$id <- id; p$label <- setNames(id, id); p
+}
+make_int <- function(id, range) {
+  p <- dials::new_quant_param(type = "integer", range = range, inclusive = c(TRUE, TRUE))
+  p$id <- id; p$label <- setNames(id, id); p
+}
+
+############################################################################
+# 2 · search space   →   80-point Latin-hypercube grid
+############################################################################
+param_set <- dials::parameters(
+  make_num("init_blocker", c(1000, 1400)),
+  make_num("init_rusher",  c( 600, 1000)),
+  make_num("scale",        c( 250,  600)),
+  make_int("K_start",      c(   5,   40)),
+  make_int("K_min",        c(   5,   20)),
+  make_int("n_prov",       c(  10,  100)),
+  make_int("n_decay",      c(  50,  200)),
+  make_int("halflife",     c(  10,   60))
+)
+
+set.seed(2025)
+param_grid <- dials::grid_latin_hypercube(param_set, size = 80) %>%
+  mutate(.iter = row_number())
+
+############################################################################
+# 3 · Elo utilities  (safe look-up uses get_rating() you already defined)
+############################################################################
+scale_logistic <- 400
+
+elo_outcome_value <- function(x) dplyr::case_when(
+  x == "won"    ~ 1,
+  x == "beaten" ~ 0.7,
+  x == "hurry"  ~ 0.55,
+  x == "hit"    ~ 0.45,
+  x == "sack"   ~ 0
+)
+
+adaptive_K_prov <- function(n, K_start, K_min, n_prov, n_decay) {
+  k <- ifelse(
+    n <= n_prov, K_min,
+    ifelse(
+      n <= n_decay,
+      K_start + (K_min - K_start) * (n - n_prov) / (n_decay - n_prov),
+      K_min))
+  pmax(k, K_min)
+}
+
+elo_step <- function(belo, relo, outcome, bK, rK,
+                     n_block = 1, scale = scale_logistic) {
+  v <- elo_outcome_value(outcome)
+  if (is.na(v)) return(c(b = belo, r = relo))
+  adj_belo <- belo + 100 * log2(n_block)
+  exp_blk  <- 1 / (1 + 10 ^ ((relo - adj_belo) / scale))
+  c(
+    b = belo + bK * ( v           - exp_blk),
+    r = relo + rK * ((1 - v)      - (1 - exp_blk))
+  )
+}
+
+############################################################################
+# 4 · split interactions_pr  (80 % train / 20 % valid)
+############################################################################
+setDT(interactions_pr)
+split_idx <- floor(0.80 * nrow(interactions_pr))
+train_tbl <- interactions_pr[1:split_idx]
+valid_tbl <- interactions_pr[(split_idx + 1):nrow(interactions_pr)]
+
+############################################################################
+# 5 · fit_and_score_once   (uses get_rating() for SAFE look-ups)
+############################################################################
+fit_and_score_once <- function(train_tbl, valid_tbl,
+                               init_blocker, init_rusher, scale,
+                               K_start, K_min, n_prov, n_decay,
+                               halflife,
+                               default_blocker = 1200,
+                               default_rusher  = 800) {
+
+  all_ids <- unique(c(train_tbl$blocker_nflId, train_tbl$rusher_nflId))
+  rushers <- unique(train_tbl$rusher_nflId)
+  raw_elo    <- setNames(ifelse(all_ids %in% rushers, init_rusher, init_blocker), all_ids)
+  smooth_elo <- raw_elo
+  alpha      <- 1 - exp(log(0.5) / halflife)
+
+  train_tbl <- train_tbl %>%
+    group_by(rusher_nflId)  %>%
+    mutate(rusher_row = row_number(),
+           rusher_k   = adaptive_K_prov(rusher_row, K_start, K_min, n_prov, n_decay)) %>%
+    ungroup() %>%
+    group_by(blocker_nflId) %>%
+    mutate(blocker_row = row_number(),
+           blocker_k   = adaptive_K_prov(blocker_row, K_start, K_min, n_prov, n_decay)) %>%
+    ungroup()
+
+  for (i in seq_len(nrow(train_tbl))) {
+    row <- train_tbl[i, ]
+
+    b_raw <- get_rating(raw_elo, row$blocker_nflId, init_blocker)
+    r_raw <- get_rating(raw_elo, row$rusher_nflId,  init_rusher)
+
+    new_raw <- elo_step(b_raw, r_raw,
+                        row$response_mod,
+                        row$blocker_k, row$rusher_k,
+                        row$n_blockers_for_rusher,
+                        scale)
+
+    raw_elo[row$blocker_nflId] <- new_raw["b"]
+    raw_elo[row$rusher_nflId ] <- new_raw["r"]
+
+    smooth_elo[row$blocker_nflId] <-
+      (1 - alpha) * get_rating(smooth_elo, row$blocker_nflId, init_blocker) +
+       alpha      * new_raw["b"]
+    smooth_elo[row$rusher_nflId]  <-
+      (1 - alpha) * get_rating(smooth_elo, row$rusher_nflId,  init_rusher)  +
+       alpha      * new_raw["r"]
+  }
+
+  freq <- train_tbl %>%
+    filter(response_mod != "won") %>%
+    count(response_mod) %>%
+    mutate(prop = n / sum(n)) %>%
+    deframe()
+
+probs <- purrr::map2_dfr(
+  valid_tbl$blocker_nflId,
+  valid_tbl$rusher_nflId,
+  function(bid, rid) {
+
+    b_rating <- get_rating(smooth_elo, bid, default_blocker)
+    r_rating <- get_rating(smooth_elo, rid, default_rusher)
+
+    p_block  <- 1 / (1 + 10 ^ ((r_rating - b_rating) / scale_logistic))
+    p_rusher <- 1 - p_block
+
+    tibble(
+      p_sack   = p_rusher * freq["sack"],
+      p_hit    = p_rusher * freq["hit"],
+      p_hurry  = p_rusher * freq["hurry"],
+      p_beaten = p_rusher * freq["beaten"],
+      p_won    = p_block
+    )
+  }
+)
+
+  ll <- case_when(
+    valid_tbl$response_mod == "sack"   ~ -log(probs$p_sack),
+    valid_tbl$response_mod == "hit"    ~ -log(probs$p_hit),
+    valid_tbl$response_mod == "hurry"  ~ -log(probs$p_hurry),
+    valid_tbl$response_mod == "beaten" ~ -log(probs$p_beaten),
+    TRUE                                ~ -log(probs$p_won)
+  )
+
+  mean(ll, na.rm = TRUE)
+}
+
+############################################################################
+# 6 · objective wrapper (one row per trial)
+############################################################################
+score_candidate <- function(.iter,
+                            init_blocker, init_rusher, scale,
+                            K_start, K_min, n_prov, n_decay, halflife) {
+
+  loss <- fit_and_score_once(
+    train_tbl, valid_tbl,
+    init_blocker, init_rusher, scale,
+    K_start,     K_min,       n_prov, n_decay,
+    halflife
+  )
+
+  tibble(.iter        = .iter,
+         .estimate    = -loss,
+         init_blocker = init_blocker,
+         init_rusher  = init_rusher,
+         scale        = scale,
+         K_start      = K_start,
+         K_min        = K_min,
+         n_prov       = n_prov,
+         n_decay      = n_decay,
+         halflife     = halflife)
+}
+
+############################################################################
+# 7 · evaluate 80 trials in parallel (safe look-ups)
+############################################################################
+grid_results <- future_pmap_dfr(
+  .l = param_grid,
+  .f = ~ score_candidate(
+          .iter        = ..9,
+          init_blocker = ..1, init_rusher = ..2, scale = ..3,
+          K_start = ..4, K_min = ..5, n_prov = ..6, n_decay = ..7, halflife = ..8),
+  .progress = TRUE
+)
+
+############################################################################
+# 8 · log, pick best, refit on all data, report
+############################################################################
+write_csv(grid_results, "elo_tuning_log.csv")
+
+best_row <- grid_results %>% arrange(.estimate) %>% slice(1)
+```
+
+```{r}
+best_row
+```
+
+```{r}
+# refit on ALL rows with best hyper-parameters
+best_loss <- fit_and_score_once(
+  train_tbl = interactions_pr, valid_tbl = interactions_pr,   # empty valid
+  init_blocker = 1207.59,
+  init_rusher  = 827.995,
+  scale        = 319.411,	
+  K_start      = 30,
+  K_min        = 7,
+  n_prov       = 87,
+  n_decay      = 122,
+  halflife     = 20
+)
+
+glue("Best validation log-loss = {round(best_row$.estimate, 4)}")
+```
+
+```{r}
+grid_results %>%
+  arrange(-desc(.estimate))
+
+
+```
+
+
