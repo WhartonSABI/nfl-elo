@@ -2,9 +2,10 @@
 ### FILES & FOLDERS ###
 #######################
 
-# omit large data files
+# large data files
 data
-
+# finder info
+.DS_Store
 
 #########
 ### R ###
