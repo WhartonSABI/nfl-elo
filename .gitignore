@@ -3,7 +3,7 @@
 #######################
 
 # large data files
-data
+data/raw
 # finder info
 .DS_Store
 
