@@ -21,7 +21,7 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 
 Read in data
 ```{r}
-#read in ten sample games data
+#read in five weeks of data
 new_data <- fread("../data/raw/five_weeks_hudl_data.csv")
 ```
 
