@@ -22,7 +22,7 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 Read in data
 ```{r}
 #read in ten sample games data
-new_data <- fread("../../nfl_data/five_weeks_hudl_data.csv")
+new_data <- fread("../data/raw/five_weeks_hudl_data.csv")
 ```
 
 ```{r}
@@ -420,10 +420,14 @@ ggplot(elo_top_blocker, aes(x = as.numeric(interaction_n), y = elo, color = play
     color = "Rusher"
   ) +
   theme_minimal()
+
+# Save results to processed data
+write_csv(elo_history, "../data/processed/elo_history.csv")
+write_csv(elo_labeled, "../data/processed/player_elo_ratings.csv")
 ```
 Load in BDB data for comparison
 ```{r}
-#bdb_data <- fread("../../nfl_data/big_data_bowl_2023_AllWeeks.csv")
+#bdb_data <- fread("../data/raw/big_data_bowl_2023_AllWeeks.csv")
 #head(bdb_data)
 ```
 ```{r}
