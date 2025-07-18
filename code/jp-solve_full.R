@@ -525,7 +525,3 @@ rm(new_data, results_cleaned, elo_history, elo_labeled, top_rushers, top_blocker
 gc()
 
 cat("memory cleanup completed\n")
-
-# load in bdb data for comparison (commented out)
-# bdb_data <- fread("../data/raw/big_data_bowl_2023_AllWeeks.csv")
-# head(bdb_data) 
