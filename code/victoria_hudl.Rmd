@@ -22,7 +22,7 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 Read in data
 ```{r}
 #read in five weeks of data
-new_data <- fread("data/raw/five_weeks_hudl_data.csv")
+new_data <- fread("../data/raw/five_weeks_hudl_data.csv")
 ```
 
 ```{r}
@@ -422,6 +422,6 @@ ggplot(elo_top_blocker, aes(x = as.numeric(interaction_n), y = elo, color = play
   theme_minimal()
 
 # Save results to processed data
-write_csv(elo_history, "data/results/elo_history.csv")
-write_csv(elo_labeled, "data/results/player_elo_ratings.csv")
+write_csv(elo_history, "../data/results/elo_history.csv")
+write_csv(elo_labeled, "../data/results/player_elo_ratings.csv")
 ```

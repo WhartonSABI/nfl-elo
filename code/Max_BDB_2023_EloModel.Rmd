@@ -20,13 +20,13 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 ```
 
 ```{r}
-full_test_data <- read.csv("data/raw/full_test_data.csv")
+full_test_data <- read.csv("../data/raw/full_test_data.csv")
 ```
 
 ```{r}
 #initialize all offense and defense elo ratings with implied defender win odds of 10:1, scaling parameter as 400 (chess)
 # assign ratings based on side of ball, ignoring player types unlikely to be in pass blocking interactions
-players2 <- read.csv("data/raw/players-2.csv")
+players2 <- read.csv("../data/raw/players-2.csv")
 init_play_ratings <- players2 %>% 
   select(nflId, displayName, officialPosition) %>%
   mutate(Defense = as.factor(ifelse(officialPosition %in% c("DE", "DT", "OLB", "ILB", "MLB", "NT", "LB", "SS", "FS", "CB", "DB"), 1, 0)),

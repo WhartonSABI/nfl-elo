@@ -21,10 +21,10 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 
 
 ```{r}
-players <- data.table::fread("data/raw/Hudl IQ 2021 player roster.csv")
-raw_events <- data.table::fread("data/raw/Hudl IQ data for Wharton School/Hudl IQ 2021 NFL Events.csv")
-freeze <- data.table::fread("data/raw/Hudl IQ data for Wharton School/Hudl IQ 2021 NFL Events + Freeze Frame.csv")
-hudl_game_id <- data.table::fread("data/raw/hudl_iq_game_ids.csv")
+players <- data.table::fread("../data/raw/Hudl IQ 2021 player roster.csv")
+raw_events <- data.table::fread("../data/raw/Hudl IQ data for Wharton School/Hudl IQ 2021 NFL Events.csv")
+freeze <- data.table::fread("../data/raw/Hudl IQ data for Wharton School/Hudl IQ 2021 NFL Events + Freeze Frame.csv")
+hudl_game_id <- data.table::fread("../data/raw/hudl_iq_game_ids.csv")
 ```
 ```{r}
 special_events <- freeze %>%
@@ -214,10 +214,10 @@ cat("trimmed_hudl_pass_data:", format(object.size(trimmed_hudl_pass_data), units
 
 ```{r}
 # save the cleaned dataset
-data.table::fwrite(trimmed_hudl_pass_data, "data/processed/full_hudl_data.csv")
+data.table::fwrite(trimmed_hudl_pass_data, "../data/processed/full_hudl_data.csv")
 
 # print summary of the saved dataset
-cat("Dataset saved to data/processed/full_hudl_data.csv\n")
+cat("Dataset saved to ../data/processed/full_hudl_data.csv\n")
 cat("Number of rows:", nrow(trimmed_hudl_pass_data), "\n")
 cat("Number of columns:", ncol(trimmed_hudl_pass_data), "\n")
 cat("File size:", format(object.size(trimmed_hudl_pass_data), units = "MB"), "\n")
