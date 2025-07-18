@@ -21,12 +21,14 @@ This repository contains the work of the NFL Pass Rushing ELO project.
 │       └── Hudl IQ 2021 NFL Events + Freeze Frame.csv
 │   └── results/
 │       ├── clean_beat_data.csv
-│       ├── elo_history.csv
-│       ├── elo_history_optimized.csv
-│       ├── player_elo_ratings.csv
-│       ├── player_elo_ratings_optimized.csv
-│       ├── elo_prelim_results.csv
-│       ├── elo_tuning_log.csv
+│       ├── full_elo_history.csv
+│       ├── full_player_elo_ratings.csv
+│       ├── full_top_10_blockers.png
+│       ├── full_top_10_rushers.png
+│       ├── partial_elo_history.csv
+│       ├── partial_player_elo_ratings.csv
+│       ├── partial_top_10_blockers.png
+│       ├── partial_top_10_rushers.png
 │       └── predict_beat_data.csv
 └── papers/
 ```
