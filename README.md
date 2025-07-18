@@ -25,6 +25,10 @@ This repository contains the work of the NFL Pass Rushing ELO project.
 │       ├── full_player_elo_ratings.csv
 │       ├── full_top_10_blockers.png
 │       ├── full_top_10_rushers.png
+│       ├── parallel_elo_history.csv
+│       ├── parallel_player_elo_ratings.csv
+│       ├── parallel_top_10_blockers.png
+│       ├── parallel_top_10_rushers.png
 │       ├── partial_elo_history.csv
 │       ├── partial_player_elo_ratings.csv
 │       ├── partial_top_10_blockers.png
