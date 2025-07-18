@@ -21,10 +21,10 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 
 ```{r}
 #load in the csv files
-games_data <- read_csv("../data/raw/games.csv") #game by game information
-players_data <- read_csv("../data/raw/players.csv") #player level information
-plays_data <- read_csv("../data/raw/plays.csv") #play by play information
-game_id <- read_csv("../data/raw/tracking_gameId_2017090700.csv") #tracking data for each play
+games_data <- read_csv("data/raw/games.csv") #game by game information
+players_data <- read_csv("data/raw/players.csv") #player level information
+plays_data <- read_csv("data/raw/plays.csv") #play by play information
+game_id <- read_csv("data/raw/tracking_gameId_2017090700.csv") #tracking data for each play
 
 #return only pass plays
 sub_gameid <- game_id %>%

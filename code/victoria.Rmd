@@ -8,11 +8,11 @@ library(data.table)
 
 #read in data
 theme_set(theme_bw())
-games <- read_csv("games.csv")
-plays <- read_csv("plays.csv")
-players <- read_csv("players.csv")
-#pffScoutingData <- read_csv("pffScoutingData.csv")
-tracking = fread('tracking_week_1.csv')
+games <- read_csv("data/raw/games.csv")
+plays <- read_csv("data/raw/plays.csv")
+players <- read_csv("data/raw/players.csv")
+#pffScoutingData <- read_csv("data/raw/pffScoutingData.csv")
+tracking = fread('data/raw/tracking_week_1.csv')
 ```
 
 Standardize the 
