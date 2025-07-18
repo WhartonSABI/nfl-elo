@@ -4,6 +4,7 @@
 
 # large data files
 data/raw
+data/processed
 # finder info
 .DS_Store
 
