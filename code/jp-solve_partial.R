@@ -45,7 +45,9 @@ matchup_tracking <- matchups %>%
         y_opp = freeze_frame_y,
         opponent_name = freeze_frame_player
       ),
-    by = c("game_id", "play_uuid", "time_since_snap", "opponent_player_id")
+    by = c("game_id", "play_uuid", "time_since_snap", "opponent_player_id"),
+    # silence warning
+    relationship = "many-to-many"
   )
 
 # join tracking data with quarterback positions and coordinates
@@ -59,7 +61,9 @@ matchup_tracking_with_qb <- matchups %>%
              qb_x  = freeze_frame_x,
              qb_y  = freeze_frame_y,
              qb_name = freeze_frame_player),
-    by = c("game_id", "play_uuid", "time_since_snap")
+    by = c("game_id", "play_uuid", "time_since_snap"),
+    # silence warning
+    relationship = "many-to-many"
   )
 
 # make table with engagement start and end times
