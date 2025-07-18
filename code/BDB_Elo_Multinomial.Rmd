@@ -20,9 +20,9 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 ```
 
 ```{r}
-full_data <- data.table::fread("../data/raw/big_data_bowl_2023_AllWeeks.csv")
+full_data <- data.table::fread("data/raw/big_data_bowl_2023_AllWeeks.csv")
 
-players2 <- data.table::fread("../data/raw/players-2.csv")
+players2 <- data.table::fread("data/raw/players-2.csv")
 ```
 
 ```{r}
@@ -581,11 +581,11 @@ all_results_complete
 ```
 
 ```{r}
-write_csv(all_results_complete, "../data/processed/elo_prelim_results.csv")
+write_csv(all_results_complete, "data/results/elo_prelim_results.csv")
 ```
 
 ```{r}
-test_all <- read.csv("../data/processed/elo_prelim_results.csv")
+test_all <- read.csv("data/results/elo_prelim_results.csv")
 test_all
 
 max_data <- max_data %>%

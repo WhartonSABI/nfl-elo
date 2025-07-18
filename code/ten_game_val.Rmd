@@ -16,7 +16,7 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 ```
 
 ```{r}
-bdb_data <- fread("../data/raw/big_data_bowl_2023_AllWeeks.csv")
+bdb_data <- fread("data/raw/big_data_bowl_2023_AllWeeks.csv")
 head(bdb_data)
 ```
 

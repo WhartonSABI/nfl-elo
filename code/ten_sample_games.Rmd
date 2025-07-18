@@ -20,11 +20,11 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 ```
 
 ```{r}
-ten_games <- read.csv("../data/raw/10_sample_games.csv")
+ten_games <- read.csv("data/raw/10_sample_games.csv")
 ```
 
 ```{r}
-players <- read.csv("../data/raw/players-2.csv")
+players <- read.csv("data/raw/players-2.csv")
 ```
 
 ```{r}
