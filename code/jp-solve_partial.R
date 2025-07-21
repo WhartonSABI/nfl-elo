@@ -29,7 +29,7 @@ head(new_data)
 
 # filter for relevant event types for elo 
 
-#sacks
+# sacks
 sacks <- new_data %>%
   filter(str_detect(event_types, "Sack")) %>% 
   select(play_uuid, game_id, event_player_name) %>%
