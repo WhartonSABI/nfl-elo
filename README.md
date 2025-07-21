@@ -34,5 +34,6 @@ This repository contains the work of the NFL Pass Rushing ELO project.
 │       ├── partial_top_10_blockers.png
 │       ├── partial_top_10_rushers.png
 │       └── predict_beat_data.csv
-└── papers/
+├── literature/
+└── writeup/
 ```
