@@ -13,11 +13,11 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 
 
 ```{r}
-results2 = fread('../data/processed/results2.csv')
+results2 = fread('../data/results/results2.csv')
 head(results2)
-sacks <- read.csv('../data/processed/sacks.csv')
+sacks <- read.csv('../data/results/sacks.csv')
 
-hits <- read.csv('../data/processed/hits.csv')
+hits <- read.csv('../data/results/hits.csv')
 
 results2 <- results2 %>%
   left_join(
@@ -54,7 +54,17 @@ Cleaning
 ```{r}
 results_cleaned <- results2 %>% 
   drop_na(game_id, rusher_name, blocker_name) %>% 
-  arrange(game_id, play_id, event_game_index)
+  arrange(game_id, play_id, event_game_index) %>% 
+  select(-sack, -hit, -rusher_won)
+
+#get distinct interactions for double teams
+outcome_summary <- results_cleaned %>%
+  group_by(game_id, play_id, rusher_name) %>%
+  filter(n_blockers_for_rusher > 1) %>%
+  summarise(outcomes = n_distinct(outcome_score), .groups = "drop")
+
+#results_cleaned <- results_cleaned %>%
+  #left_join(outcome_summary, by = c("game_id", "play_id", "rusher_name"))
 
 init_play_ratings <- results_cleaned %>%
   select(rusher_name, blocker_name) %>%
@@ -105,8 +115,8 @@ elo_step <- function(
 
   #rusher rewarded when they win; blocker rewarded when rusher fails
   c(
-    b = belo + blocker_K * ((1 - outcome_score) - (1 - exp_rusher)),  # blocker reward
-    r = relo + rusher_K  * ( outcome_score      -      exp_rusher)   # rusher reward
+    b = belo + blocker_K * ((1 - outcome_score) - (1 - exp_rusher)), 
+    r = relo + rusher_K  * ( outcome_score      -      exp_rusher)   
   )
 }
 
@@ -244,8 +254,8 @@ final_elos <- elo_long %>%
 
 # Select top 10 per role based on final Elo
 top_players <- final_elos %>%
-  filter(interaction_n > 200) %>% 
   group_by(role) %>%
+  filter(interaction_n > 200) %>% 
   slice_max(elo, n = 10) %>%
   pull(player_name)
 
@@ -388,7 +398,7 @@ ggplot(sample_blocker, aes(x = as.numeric(interaction_n), y = elo, color = playe
   )
 ```
 ```{r}
-pro_bowl = c("T.J. Watt", "Myles Garrett")
+pro_bowl = c("Aaron Donald", "Myles Garrett")
 
 pro_ol <- elo_long %>%
   filter( player_name %in% pro_bowl) 
