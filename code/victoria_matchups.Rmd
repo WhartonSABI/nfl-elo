@@ -29,8 +29,9 @@ Read in data
 ```{r}
 #read in five weeks of data
 new_data <- fread("../data/processed/full_hudl_data.csv")
-new_data <- new_data %>% 
-  filter(week %in% 1:12)
+# get rid of filter for only some years
+# new_data <- new_data %>% 
+#   filter(week %in% 1:12)
 
 #unique(new_data$week)
 ```
@@ -129,7 +130,7 @@ matchup_tracking <- matchups %>%
         y_opp = freeze_frame_y,
         opponent_name = freeze_frame_player
       ),
-    by = c("game_id", "play_uuid", "time_since_snap", "opponent_player_id"), relationship = "many "
+    by = c("game_id", "play_uuid", "time_since_snap", "opponent_player_id"), relationship = "many-to-many"
   )
 
 matchup_tracking_with_qb <- matchups %>%
