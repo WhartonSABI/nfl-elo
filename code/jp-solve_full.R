@@ -30,50 +30,6 @@ head(new_data)
 ### DATA PREPROCESSING ###
 ##########################
 
-# filter for relevant event types for elo 
-
-#sacks
-sacks <- new_data %>%
-  filter(str_detect(event_types, "Sack")) %>% 
-  select(play_uuid, game_id, event_player_name) %>%
-  rename(sack_player = event_player_name) %>% 
-  distinct(play_uuid, game_id, sack_player) %>% 
-  mutate(sack = 1L)
-
-#hits
-qbs <- new_data %>% 
-  filter(freeze_frame_position == "Quarterback") %>% 
-  distinct(freeze_frame_player)
-
-tackles_qb <- new_data %>%
-  filter(event_types == "{Tackle}") %>%
-  filter(opponent_player_name %in% qbs$freeze_frame_player) %>% 
-  filter(freeze_frame_position == "Quarterback") %>%   # Only QB getting tackled
-  select(game_id, play_uuid, time_since_snap, event_player_name,
-         event_x, event_y, freeze_frame_x, freeze_frame_y,
-         freeze_frame_position, play_start_event, event_types, opponent_player_name)
-
-pass_times <- new_data %>%
-  filter(str_detect(event_types, "Pass")) %>%
-  group_by(play_uuid) %>%
-  summarise(pass_time = min(time_since_snap), .groups = "drop")
-
-tackles_qb <- tackles_qb %>%
-  left_join(pass_times, by = "play_uuid") %>%
-  anti_join(sacks, by = "play_uuid") %>% 
-  filter(is.na(pass_time) | time_since_snap < pass_time) %>% 
-  filter(!is.na(time_since_snap)) 
-
-hits <- tackles_qb %>% 
-  select(play_uuid, game_id, event_player_name) %>%
-  rename(hit_player = event_player_name) %>% 
-  distinct(play_uuid, game_id, hit_player) %>% 
-  mutate(hit = 1L) 
-
-# memory cleanup: remove intermediate datasets
-rm(pass_times, tackles_qb)
-gc()
-
 # filter data to select relevant columns for matchups
 matchups <- new_data %>% 
   select(freeze_frame_player, event_player_name, opponent_player_name, event_uuid, event_game_index, game_id, play_uuid, player_id,  time_since_snap,opponent_player_id,  freeze_frame_player_id, event_types, event_x, event_y, start_engagement_uuid, end_engagement_uuid, play_start_event, time_since_snap, freeze_frame_x, freeze_frame_y, event_player_position, freeze_frame_player_id, freeze_frame_position, freeze_frame_player_team, nflfast_game_id)
@@ -308,7 +264,6 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking, game_id,
 }
 
 # apply function to get table of results
-cat("Starting evaluation of", nrow(matchups_all_nested), "engagements...\n")
 results2 <- pmap_dfr(
   list(
     rusher     = matchups_all_nested$rusher_name,
@@ -323,8 +278,6 @@ results2 <- pmap_dfr(
   safe_eval
 )
 
-cat("Evaluation completed. Processing", nrow(results2), "results.\n")
-
 # memory cleanup: remove nested data after evaluation
 rm(matchups_all_nested)
 gc()
@@ -334,32 +287,6 @@ gc()
 #########################
 
 # cleaning results data
-results2 <- results2 %>%
-  left_join(
-    sacks %>% select(game_id, play_uuid, sack_player, sack),
-    by = c("game_id", "play_id" = "play_uuid", "rusher_name" = "sack_player")
-  ) %>%
-  mutate(sack = replace_na(sack, 0L)) 
-
-
-results2 <- results2 %>%
-  left_join(
-    hits %>% select(game_id, play_uuid, hit_player, hit),
-    by = c("game_id", "play_id" = "play_uuid", "rusher_name" = "hit_player")
-  ) %>%
-  mutate(hit = replace_na(hit, 0L))
-
-
-results2 <- results2 %>%
-  mutate(
-    outcome_score = case_when(
-      sack == 1L         ~ 1.0,
-      hit == 1L          ~ 0.5,
-      rusher_won == 1L   ~ 0.25,
-      TRUE               ~ 0.0
-    )
-  )
-
 results_cleaned <- results2 %>% 
   drop_na(game_id, rusher_name, blocker_name) %>% 
   arrange(game_id, play_id)
@@ -368,11 +295,11 @@ results_cleaned <- results2 %>%
 rm(results2)
 gc()
 
-# initialize player elo ratings - rushers start at 750, blockers at 1100
+# initialize player elo ratings - rushers start at 900, blockers at 1100
 init_play_ratings <- results_cleaned %>%
   select(rusher_name, blocker_name) %>%
   pivot_longer(everything(), names_to = "type", values_to = "player_name") %>%
-  mutate(Player_Elo = ifelse(type == "rusher_name", 750, 1100)) %>%  
+  mutate(Player_Elo = ifelse(type == "rusher_name", 900, 1100)) %>%  
   distinct(player_name, .keep_all = TRUE)
 
 elo_vec <- setNames(init_play_ratings$Player_Elo, init_play_ratings$player_name)
@@ -383,7 +310,7 @@ gc()
 
 # elo rating system parameters and functions
 K <- 32  # k-factor determines how much ratings change per game
-scale <- 319  # scale factor for elo calculations
+scale <- 400  # scale factor for elo calculations
 
 # elo step function - updates ratings based on outcome
 # parameters:
@@ -415,7 +342,6 @@ get_elo <- function(id) {
 
 # main elo rating update loop
 # this processes each engagement chronologically and updates player ratings
-cat("Starting sequential ELO rating updates for", nrow(results_cleaned), "engagements...\n")
 results_cleaned <- as.data.table(results_cleaned)
 interaction_counts <- list()  # initialize interaction count
 elo_history <- results_cleaned %>%
@@ -455,8 +381,6 @@ for (i in seq_len(nrow(elo_history))) {
   elo_history$after_rusher_elo[i]  <- new["r"]
   elo_history$after_blocker_elo[i] <- new["b"]
 }
-
-cat("ELO rating updates completed.\n")
 
 # memory cleanup: remove interaction counter
 rm(interaction_counts)

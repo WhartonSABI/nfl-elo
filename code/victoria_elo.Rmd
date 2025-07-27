@@ -13,11 +13,11 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 
 
 ```{r}
-results2 = fread('../data/results/results2.csv')
+results2 = fread('../data/processed/results2.csv')
 head(results2)
-sacks <- read.csv('../data/results/sacks.csv')
+sacks <- read.csv('../data/processed/sacks.csv')
 
-hits <- read.csv('../data/results/hits.csv')
+hits <- read.csv('../data/processed/hits.csv')
 
 results2 <- results2 %>%
   left_join(

@@ -50,7 +50,7 @@ sacks <- new_data %>%
   distinct(play_uuid, game_id, sack_player) %>% 
   mutate(sack = 1L)
 
-write.csv(sacks, '../data/results/sacks.csv', row.names = FALSE)
+write.csv(sacks, '../data/processed/sacks.csv', row.names = FALSE)
 ```
 
 
@@ -88,7 +88,7 @@ hits <- tackles_qb %>%
   distinct(play_uuid, game_id, hit_player) %>% 
   mutate(hit = 1L) 
 
-write.csv(hits, '../data/results/hits.csv', row.names = FALSE)
+write.csv(hits, '../data/processed/hits.csv', row.names = FALSE)
 ```
 
 Look at tackle attempts
@@ -371,7 +371,7 @@ cat("Parallel evaluation completed. Processing", nrow(results2), "results.\n")
 ```
 
 ```{r}
-write.csv(results2, '../data/results/results2.csv')
+write.csv(results2, '../data/processed/results2.csv')
 ```
 
 
