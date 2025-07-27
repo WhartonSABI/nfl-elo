@@ -1,4 +1,4 @@
----
+ ---
 title: "Hudl 10 Sample Games ELO"
 author: "Victoria"
 date: "2025-07-02"
@@ -29,17 +29,13 @@ Read in data
 ```{r}
 #read in five weeks of data
 new_data <- fread("../data/processed/full_hudl_data.csv")
-# get rid of filter for only some years
-# new_data <- new_data %>% 
-#   filter(week %in% 1:12)
+new_data <- new_data %>% 
+  filter(week %in% 1:12)
 
 #unique(new_data$week)
 ```
 
-```{r}
-names(new_data)
-head(new_data)
-```
+
 Encode sacks
 ```{r}
 print(unique(new_data$event_types))
@@ -51,7 +47,7 @@ sacks <- new_data %>%
   distinct(play_uuid, game_id, sack_player) %>% 
   mutate(sack = 1L)
 
-write.csv(sacks, '../data/processed/sacks.csv', row.names = FALSE)
+write.csv(sacks, '../data/results/sacks.csv', row.names = FALSE)
 ```
 
 
@@ -60,8 +56,8 @@ Get quarterbacks
 qbs <- new_data %>% 
   filter(freeze_frame_position == "Quarterback") %>% 
   distinct(freeze_frame_player)
-```
 
+```
 Get hits
 ```{r}
 tackles_qb <- new_data %>%
@@ -89,7 +85,7 @@ hits <- tackles_qb %>%
   distinct(play_uuid, game_id, hit_player) %>% 
   mutate(hit = 1L) 
 
-write.csv(hits, '../data/processed/hits.csv', row.names = FALSE)
+write.csv(hits, '../data/results/hits.csv', row.names = FALSE)
 ```
 
 Look at tackle attempts
@@ -103,14 +99,13 @@ tackles_attempts <- new_data %>%
          event_x, event_y, freeze_frame_x, freeze_frame_y,
          freeze_frame_position, event_types, opponent_player_name) %>% 
   anti_join(sacks, by = "play_uuid") %>% 
-  anti_join(hits, by = "play_uuid") 
+  anti_join(hits, by = "play_uuid")
 ```
 
 Filter 
 ```{r}
 matchups <- new_data %>% 
   select(freeze_frame_player, event_player_name, opponent_player_name, event_uuid, event_game_index, game_id, play_uuid, player_id,  time_since_snap,opponent_player_id,  opponent_position, freeze_frame_player_id, event_types, event_x, event_y, start_engagement_uuid, end_engagement_uuid, play_start_event, time_since_snap, freeze_frame_x, freeze_frame_y, event_player_position, freeze_frame_player_id, freeze_frame_position, freeze_frame_player_team, nflfast_game_id, week)
-
 ```
 
 ```{r}
@@ -145,14 +140,12 @@ matchup_tracking_with_qb <- matchups %>%
              qb_name = freeze_frame_player),
     by = c("game_id", "play_uuid", "time_since_snap"), relationship = "many-to-many"
   )
-
 ```
 
 Make table with engagement start and end times
 ```{r}
 engagements <- matchup_tracking_with_qb %>% 
   filter(event_types %in% c("{\"\"\"\"Engagement Start\"\"\"\"}"  , "{\"\"\"\"Engagement End\"\"\"\"}", "{Pass}" , "{Pass,Hit}", "{Hit,Pass}", "{Sack,Tackle}"))
-
 ```
 
 Identify rusher and blocker and put engagement start and end in columns
@@ -181,6 +174,8 @@ matchups_all <- engagements %>%
 
   Engage_start = time_since_snap[event_types == "{\"\"\"\"Engagement Start\"\"\"\"}"][1],
   Engage_end   = time_since_snap[event_types == "{\"\"\"\"Engagement End\"\"\"\"}"][1],
+  
+  event_game_index = min(event_game_index, na.rm = TRUE),
 
   game_id  = first(game_id),
   qb_id    = first(qb_id),
@@ -219,12 +214,12 @@ matchups_all <- matchups_all %>%
   left_join(pass_times, by = "play_uuid")
 ```
 Add a column to each engagement with each play nested in that row's entry
+
 ```{r}
 #prepare engagements table to iterate through frames in a play
 play_tracking <- engagements %>%
   group_by(play_uuid) %>%
   nest()
-
 ```
 
 
@@ -233,18 +228,21 @@ play_tracking <- engagements %>%
 matchups_all_nested <- matchups_all %>%
   left_join(play_tracking, by = "play_uuid")
 
-```
+matchups_all_nested <- matchups_all_nested %>%
+  arrange(game_id, event_game_index)
 
+```
 ```{r}
 
 #function to calculate pass block win: encode rusher wins
 safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
-                      game_id, play_id, n_blockers_for_rusher) {
+                      game_id, play_id, event_game_index, n_blockers_for_rusher) {
   tryCatch({
     if (is.na(start) || is.na(end) || is.na(pass_time) || !is.data.frame(tracking)) {
       return(tibble(
         game_id = game_id,
         play_id = play_id,
+        event_game_index = event_game_index,
         rusher_name  = rusher,
         blocker_name = blocker,
         beat_time    = NA_real_,
@@ -296,6 +294,7 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
       return(tibble(
         game_id = game_id,
         play_id = play_id,
+        event_game_index = event_game_index,
         rusher_name  = rusher,
         blocker_name = blocker,
         beat_time    = NA_real_,
@@ -316,6 +315,7 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
       tibble(
         game_id = game_id,
         play_id = play_id,
+        event_game_index = event_game_index,
         rusher_name  = rusher,
         blocker_name = blocker,
         beat_time    = as.numeric(wide_rb$time_since_snap[idx[1]]),
@@ -327,6 +327,7 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
       tibble(
         game_id = game_id,
         play_id = play_id,
+        event_game_index = event_game_index,
         rusher_name  = rusher,
         blocker_name = blocker,
         beat_time    = NA_real_,
@@ -340,6 +341,7 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
     tibble(
       game_id = game_id,
       play_id = play_id,
+      event_game_index = event_game_index,
       rusher_name  = rusher,
       blocker_name = blocker,
       beat_time    = NA_real_,
@@ -362,7 +364,8 @@ results2 <- future_pmap_dfr(
     tracking   = matchups_all_nested$data,
     game_id    = matchups_all_nested$game_id, 
     play_id    = matchups_all_nested$play_uuid,
-    n_blockers_for_rusher = matchups_all_nested$n_blockers_for_rusher
+    n_blockers_for_rusher = matchups_all_nested$n_blockers_for_rusher,
+    event_game_index = matchups_all_nested$event_game_index 
   ),
   safe_eval,
   .options = furrr_options(seed = TRUE)
@@ -372,7 +375,5 @@ cat("Parallel evaluation completed. Processing", nrow(results2), "results.\n")
 ```
 
 ```{r}
-write.csv(results2, '../data/processed/results2.csv')
+write.csv(results2, '../data/results/results2.csv')
 ```
-
-
