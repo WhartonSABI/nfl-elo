@@ -27,10 +27,11 @@ plan(multisession, workers = parallel::detectCores() - 1)
 
 Read in data
 ```{r}
-#read in five weeks of data
+#read in data
 new_data <- fread("../data/processed/full_hudl_data.csv")
-new_data <- new_data %>% 
-  filter(week %in% 1:12)
+# # filter for vickysuzie
+# new_data <- new_data %>% 
+#   filter(week %in% 1:12)
 
 #unique(new_data$week)
 ```
