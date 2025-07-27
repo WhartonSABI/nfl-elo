@@ -15,7 +15,7 @@ if(!require("pacman")) install.packages("pacman")
 pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
                GGally, RColorBrewer, ggsci, plotROC, usmap,
                plotly, ggpubr, vistime, coefplot, skimr, car, ggrepel, slider, lubridate,parallel, 
-               tidymodels,ranger,vip,ggplot2, tune,dials,pdp, purrr, stringr, lmtest, future,
+               tidymodels,ranger,vip,ggplot2, tune,dials,pdp, purrr, stringr, lmtest, future, furrr,
                sandwich)
 
 # boost working memory
@@ -29,6 +29,10 @@ Read in data
 ```{r}
 #read in five weeks of data
 new_data <- fread("../data/processed/full_hudl_data.csv")
+new_data <- new_data %>% 
+  filter(week %in% 1:12)
+
+#unique(new_data$week)
 ```
 
 ```{r}
@@ -104,26 +108,28 @@ tackles_attempts <- new_data %>%
 Filter 
 ```{r}
 matchups <- new_data %>% 
-  select(freeze_frame_player, event_player_name, opponent_player_name, event_uuid, event_game_index, game_id, play_uuid, player_id,  time_since_snap,opponent_player_id,  freeze_frame_player_id, event_types, event_x, event_y, start_engagement_uuid, end_engagement_uuid, play_start_event, time_since_snap, freeze_frame_x, freeze_frame_y, event_player_position, freeze_frame_player_id, freeze_frame_position, freeze_frame_player_team, nflfast_game_id)
+  select(freeze_frame_player, event_player_name, opponent_player_name, event_uuid, event_game_index, game_id, play_uuid, player_id,  time_since_snap,opponent_player_id,  opponent_position, freeze_frame_player_id, event_types, event_x, event_y, start_engagement_uuid, end_engagement_uuid, play_start_event, time_since_snap, freeze_frame_x, freeze_frame_y, event_player_position, freeze_frame_player_id, freeze_frame_position, freeze_frame_player_team, nflfast_game_id, week)
 
+```
+
+```{r}
+rm(new_data)
+gc()
 ```
 
 Add the freeze frame of opponent players and qb in matchups to data 
 ```{r}
-
-matchups <- new_data
-
 matchup_tracking <- matchups %>%
   left_join(
     matchups %>% 
-      select(game_id, play_uuid, time_since_snap, freeze_frame_player_id, freeze_frame_x, freeze_frame_y, freeze_frame_player, event_game_index) %>% 
+      select(game_id, play_uuid, time_since_snap, freeze_frame_player_id, freeze_frame_x, freeze_frame_y, freeze_frame_player, event_game_index, week) %>% 
       rename(
         opponent_player_id = freeze_frame_player_id,
         x_opp = freeze_frame_x,
         y_opp = freeze_frame_y,
         opponent_name = freeze_frame_player
       ),
-    by = c("game_id", "play_uuid", "time_since_snap", "opponent_player_id")
+    by = c("game_id", "play_uuid", "time_since_snap", "opponent_player_id"), relationship = "many "
   )
 
 matchup_tracking_with_qb <- matchups %>%
@@ -136,7 +142,7 @@ matchup_tracking_with_qb <- matchups %>%
              qb_x  = freeze_frame_x,
              qb_y  = freeze_frame_y,
              qb_name = freeze_frame_player),
-    by = c("game_id", "play_uuid", "time_since_snap")
+    by = c("game_id", "play_uuid", "time_since_snap"), relationship = "many-to-many"
   )
 
 ```
@@ -159,7 +165,7 @@ matchups_all <- engagements %>%
       "{Pass}", "{Pass,Hit}", "{Sack,Tackle}", "{Hit,Pass}"
     )
   ) %>%
-  arrange(play_uuid, event_game_index, player_id, opponent_player_id, event_types) %>%
+  arrange(week, play_uuid, event_game_index, player_id, opponent_player_id, event_types) %>%
   #filter(player_position %in% c("Defensive Lineman", "Linebacker")) %>%  # only keep defenders
   group_by(play_uuid, player_id, opponent_player_id) %>%
   summarize(
@@ -184,7 +190,14 @@ matchups_all <- engagements %>%
 )
 
 matchups_all <- matchups_all %>%
-  drop_na(blocker_idx) %>%
+  drop_na(blocker_idx) 
+
+blocker_counts <- matchups_all %>%
+  group_by(game_id, play_uuid, rusher_id) %>%
+  summarize(n_blockers_for_rusher = n(), .groups = "drop")
+
+matchups_all <- matchups_all %>%
+  left_join(blocker_counts, by = c("game_id", "play_uuid", "rusher_id"))
 ```
 Clear memory
 ```{r}
@@ -224,7 +237,8 @@ matchups_all_nested <- matchups_all %>%
 ```{r}
 
 #function to calculate pass block win: encode rusher wins
-safe_eval <- function(rusher, blocker, start, end, pass_time, tracking, game_id, play_id) {
+safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
+                      game_id, play_id, n_blockers_for_rusher) {
   tryCatch({
     if (is.na(start) || is.na(end) || is.na(pass_time) || !is.data.frame(tracking)) {
       return(tibble(
@@ -234,7 +248,8 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking, game_id,
         blocker_name = blocker,
         beat_time    = NA_real_,
         beat_dist    = NA_real_,
-        rusher_won   = 0L
+        rusher_won   = 0L, 
+        n_blockers_for_rusher = n_blockers_for_rusher
       ))
     }
 
@@ -304,7 +319,8 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking, game_id,
         blocker_name = blocker,
         beat_time    = as.numeric(wide_rb$time_since_snap[idx[1]]),
         beat_dist    = as.numeric(d_r[idx[1]]),
-        rusher_won   = 1L
+        rusher_won   = 1L,
+        n_blockers_for_rusher = n_blockers_for_rusher
       )
     } else {
       tibble(
@@ -314,7 +330,8 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking, game_id,
         blocker_name = blocker,
         beat_time    = NA_real_,
         beat_dist    = NA_real_,
-        rusher_won   = 0L
+        rusher_won   = 0L,
+        n_blockers_for_rusher = n_blockers_for_rusher
       )
     }
 
@@ -326,7 +343,8 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking, game_id,
       blocker_name = blocker,
       beat_time    = NA_real_,
       beat_dist    = NA_real_,
-      rusher_won   = 0L
+      rusher_won   = 0L,
+      n_blockers_for_rusher = n_blockers_for_rusher
     )
   })
 }
@@ -342,7 +360,8 @@ results2 <- future_pmap_dfr(
     pass_time  = matchups_all_nested$pass_time,
     tracking   = matchups_all_nested$data,
     game_id    = matchups_all_nested$game_id, 
-    play_id    = matchups_all_nested$play_uuid
+    play_id    = matchups_all_nested$play_uuid,
+    n_blockers_for_rusher = matchups_all_nested$n_blockers_for_rusher
   ),
   safe_eval,
   .options = furrr_options(seed = TRUE)

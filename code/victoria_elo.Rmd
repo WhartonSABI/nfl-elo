@@ -25,13 +25,21 @@ results2 <- results2 %>%
     by = c("game_id", "play_id" = "play_uuid", "rusher_name" = "sack_player")
   ) %>%
   mutate(sack = replace_na(sack, 0L)) 
+
+
+results2 <- results2 %>%
+  left_join(
+    hits %>% select(game_id, play_uuid, hit_player, hit),
+    by = c("game_id", "play_id" = "play_uuid", "rusher_name" = "hit_player")
+  ) %>%
+  mutate(hit = replace_na(hit, 0L))
   
 
 results2 <- results2 %>%
   mutate(
     outcome_score = case_when(
-      sack == 1L         ~ 1.0,
-      #hit == 1L          ~ 0.7,
+      sack == 1L         ~ 2.0,
+      hit == 1L          ~ 0.8,
       rusher_won == 1L   ~ 0.4,
       TRUE               ~ 0.0
     )
@@ -46,30 +54,30 @@ Cleaning
 ```{r}
 results_cleaned <- results2 %>% 
   drop_na(game_id, rusher_name, blocker_name) %>% 
-  arrange(game_id, play_id)
+  arrange(game_id, play_id, event_game_index)
 
 init_play_ratings <- results_cleaned %>%
   select(rusher_name, blocker_name) %>%
   pivot_longer(everything(), names_to = "type", values_to = "player_name") %>%
-  mutate(Player_Elo = ifelse(type == "rusher_name", 827, 1100)) %>%  
+  mutate(Player_Elo = ifelse(type == "rusher_name", 750, 1125)) %>%  
   distinct(player_name, .keep_all = TRUE)
 
 elo_vec <- setNames(init_play_ratings$Player_Elo, init_play_ratings$player_name)
 ```
 
 ```{r}
-# memory cleanup: remove initial ratings after vector creation
-rm(init_play_ratings)
-gc()
+sum(results_cleaned$n_blockers_for_rusher == 0, na.rm = TRUE)
+sum(is.na(results_cleaned$outcome_score))
 ```
+
 
 Elo function
 ```{r}
 #adaptive learning rate from max
-adaptive_K_prov <- function(n, K_start = 32, K_min = 10, n_prov = 50, n_decay = 100) {
+adaptive_K_prov <- function(n, K_start, K_min, n_prov, n_decay) {
   k <- ifelse(
     n <= n_prov,
-    K_min,
+    K_start,
     ifelse(
       n <= n_decay,
       K_start + (K_min - K_start) * (n - n_prov) / (n_decay - n_prov),
@@ -79,15 +87,27 @@ adaptive_K_prov <- function(n, K_start = 32, K_min = 10, n_prov = 50, n_decay = 
   pmax(k, K_min)
 }
 
-#updated elo function to include K
-elo_step <- function(belo, relo, outcome, K, scale = 319) {
-  E_r <- 1 / (1 + 10^((belo - relo) / scale))
-  E_b <- 1 - E_r
-  
-  new_r <- relo + K * (outcome - E_r)
-  new_b <- belo + K * ((1 - outcome) - E_b)
-  
-  c(b = new_b, r = new_r)
+#updated elo function to include K and double teams
+elo_step <- function(
+  belo, relo, outcome_score, blocker_K, rusher_K,
+  n_blockers_for_rusher, scale = 319
+) {
+  if (is.na(outcome_score)) return(c(b = belo, r = relo))
+
+  blocker_bonus <- ifelse(is.na(n_blockers_for_rusher) || n_blockers_for_rusher <= 0,
+                          0,
+                          100 * log2(n_blockers_for_rusher))
+
+  adj_belo <- belo + blocker_bonus
+
+  #calc based on rusher win prob
+  exp_rusher <- 1 / (1 + 10 ^ ((adj_belo - relo) / scale))
+
+  #rusher rewarded when they win; blocker rewarded when rusher fails
+  c(
+    b = belo + blocker_K * ((1 - outcome_score) - (1 - exp_rusher)),  # blocker reward
+    r = relo + rusher_K  * ( outcome_score      -      exp_rusher)   # rusher reward
+  )
 }
 
 get_elo <- function(id) {
@@ -98,25 +118,48 @@ get_elo <- function(id) {
 
 ```
 
+```{r}
+results_cleaned <- as.data.table(results_cleaned)
+
+results_cleaned <- results_cleaned %>%
+  group_by(rusher_name) %>%
+  mutate(rusher_row = row_number()) %>%
+  ungroup() %>%
+  group_by(blocker_name) %>%
+  mutate(blocker_row = row_number()) %>%
+  ungroup()
+
+#compute k for rusher and blocker
+results_cleaned <- results_cleaned %>%
+  mutate(
+    rusher_k = adaptive_K_prov(n = rusher_row, K_start = 20, K_min = 7, n_prov = 87, n_decay = 200),
+    blocker_k = adaptive_K_prov(blocker_row, K_start = 20, K_min = 7, n_prov = 87, n_decay = 200)
+  )
+```
+
 
 ```{r}
 
-results_cleaned <- as.data.table(results_cleaned)
 interaction_counts <- list()  # Initialize interaction count
+elo_vec <- setNames(init_play_ratings$Player_Elo, init_play_ratings$player_name)
+
 elo_history <- results_cleaned %>%
   mutate(
     before_rusher_elo = NA_real_,
     before_blocker_elo = NA_real_,
     after_rusher_elo = NA_real_,
-    after_blocker_elo = NA_real_, 
-    rusher_n = NA_integer_,
-    blocker_n = NA_integer_
+    after_blocker_elo = NA_real_,
+    rusher_n           = rusher_row,
+    blocker_n          = blocker_row
   )
 
-for (i in seq_len(nrow(elo_history))) {
-  r_id <- elo_history$rusher_name[i]
-  b_id <- elo_history$blocker_name[i]
-  out  <- elo_history$outcome_score[i]
+for (i in seq_len(nrow(results_cleaned))) {
+  r_id <- results_cleaned$rusher_name[i]
+  b_id <- results_cleaned$blocker_name[i]
+  out  <- results_cleaned$outcome_score[i]
+  r_K  <- results_cleaned$rusher_k[i]
+  b_K  <- results_cleaned$blocker_k[i]
+  n_bl <- results_cleaned$n_blockers_for_rusher[i]
 
   if (is.na(r_id) || is.na(b_id) || is.na(out)) next
 
@@ -125,33 +168,26 @@ for (i in seq_len(nrow(elo_history))) {
 
   elo_history$before_rusher_elo[i]  <- r_elo
   elo_history$before_blocker_elo[i] <- b_elo
-  
-  interaction_counts[[r_id]] <- if (is.null(interaction_counts[[r_id]])) 1L else interaction_counts[[r_id]] + 1L
-  interaction_counts[[b_id]] <- if (is.null(interaction_counts[[b_id]])) 1L else interaction_counts[[b_id]] + 1L
 
-  elo_history$rusher_n[i]  <- interaction_counts[[r_id]]
-  elo_history$blocker_n[i] <- interaction_counts[[b_id]]
-  
-  r_n <- elo_history$rusher_n[i]
-  b_n <- elo_history$blocker_n[i]
+  new <- elo_step(b_elo, r_elo, outcome_score = out, blocker_K = b_K, rusher_K = r_K, n_blockers_for_rusher = n_bl)
 
-  r_K <- adaptive_K_prov(r_n, K_start = 32, K_min = 10, n_prov = 50, n_decay = 100)
-  b_K <- adaptive_K_prov(b_n, K_start = 32, K_min = 10, n_prov = 50, n_decay = 100)
-
-
-  new <- elo_step(b_elo, r_elo, outcome = out, K = r_K)
-
+  if (!any(is.na(new))) {
   elo_vec[[r_id]] <- new["r"]
   elo_vec[[b_id]] <- new["b"]
+}
 
   elo_history$after_rusher_elo[i]  <- new["r"]
   elo_history$after_blocker_elo[i] <- new["b"]
 }
+
 ```
 
+
+
 ```{r}
-#rm(interaction_counts)
-#gc()
+# memory cleanup: remove initial ratings after vector creation
+rm(init_play_ratings)
+gc()
 ```
 
 
@@ -201,12 +237,16 @@ elo_long <- elo_history %>%
   select(play_id, game_id, player_name, role, interaction_n, elo) %>%
   filter(!is.na(elo))
 
-#filter for top players
-top_players <- elo_long %>%
+final_elos <- elo_long %>%
   group_by(player_name, role) %>%
-  summarize(final_elo = max(elo, na.rm = TRUE), .groups = "drop") %>%
+  filter(interaction_n == max(interaction_n, na.rm = TRUE)) %>%
+  ungroup()
+
+# Select top 10 per role based on final Elo
+top_players <- final_elos %>%
+  filter(interaction_n > 200) %>% 
   group_by(role) %>%
-  slice_max(final_elo, n = 10) %>%
+  slice_max(elo, n = 10) %>%
   pull(player_name)
 
 elo_top <- elo_long %>%
@@ -219,28 +259,181 @@ elo_top_rusher <- elo_top %>% filter(role == "Rusher")
 elo_top_blocker <- elo_top %>% filter(role == "Blocker")
 
 ggplot(elo_top_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
-  geom_line(size = 1) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+                        name = "Player") +
   labs(
-    title = "Top 10 Rushers: Elo Trajectory",
-    x = "Interaction Number",
-    y = "Elo Rating",
-    color = "Rusher"
+    title    = "Top 10 Rushers: Elo Trajectories",
+    subtitle = "Evolution of Elo rating over successive plays",
+    x        = "Observation Number",
+    y        = "Elo Rating"
   ) +
-  theme_minimal()
-
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
+    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right",
+    legend.title     = element_text(face = "bold", size = 12),
+    legend.text      = element_text(size = 10),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA)
+  )
+ 
 ggplot(elo_top_blocker, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1) +
+  geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+                        name = "Player") +
   labs(
-    title = "Top 10 Blockers: Elo Trajectory",
-    x = "Interaction Number",
-    y = "Elo Rating",
-    color = "Blocker"
+    title    = "Top 10 Blockers: Elo Trajectories",
+    subtitle = "Evolution of Elo rating over successive plays",
+    x        = "Observation Number",
+    y        = "Elo Rating"
   ) +
-  theme_minimal()
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
+    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right",
+    legend.title     = element_text(face = "bold", size = 12),
+    legend.text      = element_text(size = 10),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA)
+  )
 
 # Save results to processed data
 write_csv(elo_history, "../data/results/elo_history.csv")
 write_csv(elo_labeled, "../data/results/player_elo_ratings.csv")
 ```
+Auxillary plots for presentation
+```{r}
+set.seed(6)
+sample <- elo_long %>%
+  filter(interaction_n > 100) %>% 
+  group_by(player_name, role) %>%
+  summarize(final_elo = max(elo, na.rm = TRUE), .groups = "drop") %>%
+  group_by(role) %>%
+  slice_sample(n = 10) %>%
+  pull(player_name)
 
+sample_rusher <- elo_long %>%
+  filter(player_name %in% sample, role == "Rusher")
+
+sample_blocker <- elo_long %>%
+  filter(player_name %in% sample, role == "Blocker")
+
+ggplot(sample_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+                        name = "Player") +
+  labs(
+    title    = "Random 10 Rushers: ELO Trajectories",
+    subtitle = "Evolution of Elo rating over successive plays",
+    x        = "Observation Number",
+    y        = "Elo Rating"
+  ) +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
+    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right",
+    legend.title     = element_text(face = "bold", size = 12),
+    legend.text      = element_text(size = 10),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA)
+  )
+
+ggplot(sample_blocker, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+                        name = "Player") +
+  labs(
+    title    = "Random 10 Blockers: Elo Trajectories",
+    subtitle = "Evolution of Elo rating over successive plays",
+    x        = "Observation Number",
+    y        = "Elo Rating"
+  ) +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
+    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right",
+    legend.title     = element_text(face = "bold", size = 12),
+    legend.text      = element_text(size = 10),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA)
+  )
+```
+```{r}
+pro_bowl = c("T.J. Watt", "Myles Garrett")
+
+pro_ol <- elo_long %>%
+  filter( player_name %in% pro_bowl) 
+
+avg <- elo_long %>%
+  summarize(mean_elo = mean(elo, na.rm = TRUE), .groups = "drop") %>%
+  pull(mean_elo)
+
+pro_avg <- pro_ol %>%
+  summarize(pro_mean_elo = mean(elo, na.rm = TRUE), .groups = "drop") %>%
+  pull(pro_mean_elo)
+
+
+  
+ggplot() +
+  geom_line(data = elo_top_rusher, 
+            aes(x = as.numeric(interaction_n), y = elo, group = player_name), 
+            size = 1) +
+  geom_line(data = pro_ol, 
+            aes(x = as.numeric(interaction_n), y = elo, color = player_name), 
+            size = 1) +
+  labs(
+    title = "Pro Bowl Blockers: Elo Trajectory",
+    x = "Interaction Number",
+    y = "Elo Rating",
+    color = "Pro Bowl Blocker"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+k_plot_df <- tibble(
+  n = 1:300,
+  K = adaptive_K_prov(n, K_start = 20, K_min = 10, n_prov = 87, n_decay = 200)
+)
+
+# Plot
+ggplot(k_plot_df, aes(x = n, y = K)) +
+  geom_line(color = "lightcoral", size = 1.5) +
+  geom_vline(xintercept = c(87, 200), linetype = "dashed", color = "slategrey") +
+  labs(
+    title = "Adaptive Learning Rate Schedule",
+    x = "Number of Interactions (n)",
+    y = "Learning Rate (K)"
+  ) +
+  theme_minimal()
+```
 
