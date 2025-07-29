@@ -1,0 +1,154 @@
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(janitor)
+library(lubridate)
+library(nflreadr)
+library(corrr)
+
+setwd("/Users/kennywatts/Documents/GitHub/nfl_elo/data/results")
+
+contracts <- load_contracts()
+
+# Filtering out rookie contracts
+
+contracts <- contracts %>%
+  group_by(player) %>%
+  mutate(contract_count = n()) %>%
+  ungroup()
+
+contracts <- contracts %>%
+  filter(!(contract_count == 1 & year_signed == draft_year))
+
+elo_data <- read_csv("player_elo_ratings.csv")
+
+head(elo_data)
+
+# Filtering for Defensive Lineman
+
+recent_contracts <- contracts %>%
+  filter(year_signed %in% c(2021, 2022))
+
+glimpse(elo_data)
+
+elo_data <- elo_data %>%
+  left_join(recent_contracts, by = c("player_name" = "player")) %>%
+  group_by(player_name) %>%
+  slice_max(year_signed, with_ties = FALSE) %>%
+  ungroup()
+
+rusher_data <- elo_data %>%
+  filter(role == "Rusher") %>%
+  drop_na()
+
+rusher_data <- rusher_data %>%
+  group_by(position) %>%
+  filter(n() >= 3) %>%
+  ungroup()
+
+blocker_data <- elo_data %>%
+  filter(role == "Blocker") %>%
+  drop_na()
+
+blocker_data <- blocker_data %>%
+  group_by(position) %>%
+  filter(n() >= 3) %>%
+  ungroup()
+
+# Regression on elo
+
+# Rushers
+ggplot(rusher_data, aes(x = final_elo, y = apy)) +  # replace with real vars
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  facet_wrap(~ position) +  # use your position column name
+  labs(title = "Scatter Plots by Position") +
+  theme_minimal()
+
+# Blockers
+ggplot(blocker_data, aes(x = final_elo, y = apy)) +  # replace with real vars
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  facet_wrap(~ position) +  # use your position column name
+  labs(title = "Scatter Plots by Position") +
+  theme_minimal()
+
+# New Approcah
+
+
+elo_with_num_obs <- read_csv("parallel_elo_history.csv")
+
+last_rusher_rows <- elo_with_num_obs %>%
+  filter(!is.na(rusher_name)) %>%
+  group_by(rusher_name) %>%
+  slice_tail(n = 1) %>%
+  ungroup() %>%
+  select(player = rusher_name, after_elo = after_rusher_elo, n_obs = rusher_n)
+
+last_blocker_rows <- elo_with_num_obs %>%
+  filter(!is.na(blocker_name)) %>%
+  group_by(blocker_name) %>%
+  slice_tail(n = 1) %>%
+  ungroup() %>%
+  select(player = blocker_name, after_elo = after_blocker_elo, n_obs = blocker_n)
+
+player_summary <- bind_rows(last_rusher_rows, last_blocker_rows) %>%
+  distinct(player, .keep_all = TRUE)
+
+player_summary <- player_summary %>%
+  filter(n_obs > 50)
+
+
+player_summary <- player_summary %>%
+  left_join(recent_contracts, by = c("player" = "player")) %>%
+  group_by(player) %>%
+  slice_max(year_signed, with_ties = FALSE) %>%
+  ungroup()
+
+rusher_data <- player_summary %>%
+  filter(position %in% c("ED", "IDL", "LB")) %>%
+  drop_na() %>%
+  group_by(position) %>%
+  filter(n() >= 3) %>%
+  ungroup()
+
+blocker_data <- player_summary %>%
+  filter(position %in% c("C", "LG", "LT", "RG", "RT")) %>%
+  drop_na() %>%
+  group_by(position) %>%
+  filter(n() >= 3) %>%
+  ungroup()
+
+# Regression on elo
+
+# Rushers
+ggplot(rusher_data, aes(x = after_elo, y = apy)) +  # replace with real vars
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  facet_wrap(~ position) +  # use your position column name
+  labs(
+    title = "Rusher Plots by Position",
+    x = "ELO Rating",
+    y = "Average Per Year (APY) in Millions"
+  ) +
+  theme_minimal()
+
+# Blockers
+ggplot(blocker_data, aes(x = after_elo, y = apy)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  facet_wrap(~ position) +
+  labs(
+    title = "Blocker Plots by Position",
+    x = "ELO Rating",
+    y = "Average Per Year (APY) in Millions"
+  ) +
+  theme_minimal()
+
+
+
+
+
+
+
+
