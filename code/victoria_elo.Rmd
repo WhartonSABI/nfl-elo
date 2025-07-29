@@ -262,7 +262,7 @@ elo_top_blocker <- elo_top %>% filter(role == "Blocker")
 ggplot(elo_top_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
-  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
                         name = "Player") +
   labs(
     title    = "Top 10 Rushers: ELO Trajectories",
@@ -289,7 +289,7 @@ ggplot(elo_top_rusher, aes(x = as.numeric(interaction_n), y = elo, color = playe
 ggplot(elo_top_blocker, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
-  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
                         name = "Player") +
   labs(
     title    = "Top 10 Blockers: ELO Trajectories",
@@ -337,7 +337,7 @@ sample_blocker <- elo_long %>%
 ggplot(sample_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
-  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
                         name = "Player") +
   labs(
     title    = "Random 10 Rushers: ELO Trajectories",
@@ -364,7 +364,7 @@ ggplot(sample_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player
 ggplot(sample_blocker, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
-  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
                         name = "Player") +
   labs(
     title    = "Random 10 Blockers: Elo Trajectories",
@@ -435,6 +435,13 @@ ggplot(k_plot_df, aes(x = n, y = K)) +
     x = "Number of Interactions (n)",
     y = "Learning Rate (K)"
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    axis.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 12),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank()
+  )
 ```
 
