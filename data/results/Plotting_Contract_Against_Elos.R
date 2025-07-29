@@ -146,6 +146,61 @@ ggplot(blocker_data, aes(x = after_elo, y = apy)) +
   theme_minimal()
 
 
+# Finding biggest outliers
+
+get_residuals <- function(df) {
+  model <- lm(apy ~ final_elo, data = df)
+  df$residual <- resid(model)
+  df$predicted_apy <- predict(model)
+  df
+}
+
+# Rushers
+
+rusher_with_resid <- rusher_data %>%
+  group_by(position) %>%
+  group_modify(~ get_residuals(.x)) %>%
+  ungroup()
+
+top_rusher_outliers <- rusher_with_resid %>%
+  arrange(desc(abs(residual))) %>%
+  group_by(position) %>%
+  slice_max(order_by = abs(residual), n = 3) %>%
+  ungroup()
+
+ggplot(rusher_with_resid, aes(x = final_elo, y = apy)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  geom_text(data = top_rusher_outliers, aes(label = player_name),
+            color = "red", vjust = -1, size = 3) +
+  facet_wrap(~ position) +
+  labs(title = "Rusher Outliers by Position", x = "Final ELO", y = "APY") +
+  theme_minimal()
+
+# Blockers
+
+blocker_with_resid <- blocker_data %>%
+  group_by(position) %>%
+  group_modify(~ get_residuals(.x)) %>%
+  ungroup()
+
+top_blocker_outliers <- blocker_with_resid %>%
+  arrange(desc(abs(residual))) %>%
+  group_by(position) %>%
+  slice_max(order_by = abs(residual), n = 3) %>%
+  ungroup()
+
+ggplot(blocker_with_resid, aes(x = final_elo, y = apy)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  geom_text(data = top_blocker_outliers, aes(label = player_name),
+            color = "red", vjust = -1, size = 3) +
+  facet_wrap(~ position) +
+  labs(title = "Blocker Outliers by Position", x = "Final ELO", y = "APY") +
+  theme_minimal()
+
+
+
 
 
 
