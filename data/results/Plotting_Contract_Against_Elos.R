@@ -172,7 +172,9 @@ ggplot(rusher_with_resid, aes(x = final_elo, y = apy)) +
   geom_point(alpha = 0.6) +
   geom_smooth(method = "lm", se = FALSE, color = "blue") +
   geom_text(data = top_rusher_outliers, aes(label = player_name),
-            color = "red", vjust = -1, size = 3) +
+            color = "red", size = 3,
+            max.overlaps = Inf
+  ) +
   facet_wrap(~ position) +
   labs(title = "Rusher Outliers by Position", x = "Final ELO", y = "APY") +
   theme_minimal()
@@ -193,8 +195,12 @@ top_blocker_outliers <- blocker_with_resid %>%
 ggplot(blocker_with_resid, aes(x = final_elo, y = apy)) +
   geom_point(alpha = 0.6) +
   geom_smooth(method = "lm", se = FALSE, color = "blue") +
-  geom_text(data = top_blocker_outliers, aes(label = player_name),
-            color = "red", vjust = -1, size = 3) +
+  ggrepel::geom_text_repel(
+    data = top_blocker_outliers,
+    aes(label = player_name),
+    color = "red", size = 3,
+    max.overlaps = Inf
+  ) +
   facet_wrap(~ position) +
   labs(title = "Blocker Outliers by Position", x = "Final ELO", y = "APY") +
   theme_minimal()
