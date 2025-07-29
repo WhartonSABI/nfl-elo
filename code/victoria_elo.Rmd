@@ -1,6 +1,6 @@
 ---
 title: "ELO updates"
-output: html
+output: html_document
 ---
 Load in matchups
 ```{r}
