@@ -265,7 +265,7 @@ ggplot(elo_top_rusher, aes(x = as.numeric(interaction_n), y = elo, color = playe
   scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
                         name = "Player") +
   labs(
-    title    = "Top 10 Rushers: Elo Trajectories",
+    title    = "Top 10 Rushers: ELO Trajectories",
     subtitle = "Evolution of Elo rating over successive plays",
     x        = "Observation Number",
     y        = "Elo Rating"
@@ -292,7 +292,7 @@ ggplot(elo_top_blocker, aes(x = as.numeric(interaction_n), y = elo, color = play
   scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
                         name = "Player") +
   labs(
-    title    = "Top 10 Blockers: Elo Trajectories",
+    title    = "Top 10 Blockers: ELO Trajectories",
     subtitle = "Evolution of Elo rating over successive plays",
     x        = "Observation Number",
     y        = "Elo Rating"
