@@ -49,7 +49,7 @@ rusher_data <- rusher_data %>%
 blocker_data <- elo_data %>%
   filter(role == "Blocker") %>%
   drop_na()
-
+mean(blocker_data$final_elo)
 blocker_data <- blocker_data %>%
   group_by(position) %>%
   filter(n() >= 3) %>%
@@ -179,6 +179,44 @@ ggplot(rusher_with_resid, aes(x = final_elo, y = apy)) +
   labs(title = "Rusher Outliers by Position", x = "Final ELO", y = "APY") +
   theme_minimal()
 
+ggplot(top_rusher_outliers, aes(x = reorder(player_name, residual), y = residual, fill = position)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~ position, scales = "free_y") +
+  labs(
+    title = "Top Rusher Residuals by Position",
+    x = "Player",
+    y = "Residual (Actual APY - Predicted)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggplot(top_rusher_outliers, aes(x = reorder(player_name, residual), y = residual, fill = position)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~ position, scales = "free_y") +
+  labs(
+    title = "Top Rusher Residuals by Position",
+    x = "Player",
+    y = "Residual (Actual APY - Predicted)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
+    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right",
+    legend.title     = element_text(face = "bold", size = 12),
+    legend.text      = element_text(size = 10),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA)
+  )
+
+
 # Blockers
 
 blocker_with_resid <- blocker_data %>%
@@ -205,7 +243,42 @@ ggplot(blocker_with_resid, aes(x = final_elo, y = apy)) +
   labs(title = "Blocker Outliers by Position", x = "Final ELO", y = "APY") +
   theme_minimal()
 
+ggplot(top_blocker_outliers, aes(x = reorder(player_name, residual), y = residual, fill = position)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~ position, scales = "free_y") +
+  labs(
+    title = "Top Blocker Residuals by Position",
+    x = "Player",
+    y = "Residual (Actual APY - Predicted)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
 
+ggplot(top_blocker_outliers, aes(x = reorder(player_name, residual), y = residual, fill = position)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~ position, scales = "free_y") +
+  labs(
+    title = "Top Blocker Residuals by Position",
+    x = "Player",
+    y = "Residual (Actual APY - Predicted)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
+    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right",
+    legend.title     = element_text(face = "bold", size = 12),
+    legend.text      = element_text(size = 10),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA)
+  )
 
 
 
