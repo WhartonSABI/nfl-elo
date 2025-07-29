@@ -57,12 +57,6 @@ results_cleaned <- results2 %>%
   arrange(game_id, play_id, event_game_index) %>% 
   select(-sack, -hit, -rusher_won)
 
-#get distinct interactions for double teams
-outcome_summary <- results_cleaned %>%
-  group_by(game_id, play_id, rusher_name) %>%
-  filter(n_blockers_for_rusher > 1) %>%
-  summarise(outcomes = n_distinct(outcome_score), .groups = "drop")
-
 #results_cleaned <- results_cleaned %>%
   #left_join(outcome_summary, by = c("game_id", "play_id", "rusher_name"))
 
@@ -100,14 +94,11 @@ adaptive_K_prov <- function(n, K_start, K_min, n_prov, n_decay) {
 #updated elo function to include K and double teams
 elo_step <- function(
   belo, relo, outcome_score, blocker_K, rusher_K,
-  n_blockers_for_rusher, scale = 319
+  double_team, scale = 319
 ) {
   if (is.na(outcome_score)) return(c(b = belo, r = relo))
 
-  blocker_bonus <- ifelse(is.na(n_blockers_for_rusher) || n_blockers_for_rusher <= 0,
-                          0,
-                          100 * log2(n_blockers_for_rusher))
-
+  blocker_bonus <- ifelse(double_team == 1, 100, 0)
   adj_belo <- belo + blocker_bonus
 
   #calc based on rusher win prob
@@ -142,8 +133,8 @@ results_cleaned <- results_cleaned %>%
 #compute k for rusher and blocker
 results_cleaned <- results_cleaned %>%
   mutate(
-    rusher_k = adaptive_K_prov(n = rusher_row, K_start = 20, K_min = 7, n_prov = 87, n_decay = 200),
-    blocker_k = adaptive_K_prov(blocker_row, K_start = 20, K_min = 7, n_prov = 87, n_decay = 200)
+    rusher_k = adaptive_K_prov(n = rusher_row, K_start = 20, K_min = 10, n_prov = 87, n_decay = 200),
+    blocker_k = adaptive_K_prov(blocker_row, K_start = 20, K_min = 10, n_prov = 87, n_decay = 200)
   )
 ```
 
@@ -169,7 +160,7 @@ for (i in seq_len(nrow(results_cleaned))) {
   out  <- results_cleaned$outcome_score[i]
   r_K  <- results_cleaned$rusher_k[i]
   b_K  <- results_cleaned$blocker_k[i]
-  n_bl <- results_cleaned$n_blockers_for_rusher[i]
+  d_t <- results_cleaned$double_team[i]
 
   if (is.na(r_id) || is.na(b_id) || is.na(out)) next
 
@@ -179,7 +170,7 @@ for (i in seq_len(nrow(results_cleaned))) {
   elo_history$before_rusher_elo[i]  <- r_elo
   elo_history$before_blocker_elo[i] <- b_elo
 
-  new <- elo_step(b_elo, r_elo, outcome_score = out, blocker_K = b_K, rusher_K = r_K, n_blockers_for_rusher = n_bl)
+  new <- elo_step(b_elo, r_elo, outcome_score = out, blocker_K = b_K, rusher_K = r_K, double_team = d_t)
 
   if (!any(is.na(new))) {
   elo_vec[[r_id]] <- new["r"]
@@ -220,11 +211,11 @@ elo_labeled <- elo_df %>%
 #get top 10
 top_rushers <- elo_labeled %>%
   filter(role == "Rusher") %>%
-  slice_max(final_elo, n = 10)
+  slice_max(final_elo, n = 12)
 
 top_blockers <- elo_labeled %>%
   filter(role == "Blocker") %>%
-  slice_max(final_elo, n = 10)
+  slice_max(final_elo, n = 12)
 ```
 
 ```{r}
