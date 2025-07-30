@@ -214,7 +214,7 @@ ggplot(top_rusher_outliers, aes(x = reorder(player_name, residual), y = residual
     legend.text      = element_text(size = 10),
     legend.key       = element_rect(fill = NA),
     legend.background= element_rect(fill = NA)
-  )
+)
 
 
 # Blockers
@@ -278,7 +278,7 @@ ggplot(top_blocker_outliers, aes(x = reorder(player_name, residual), y = residua
     legend.text      = element_text(size = 10),
     legend.key       = element_rect(fill = NA),
     legend.background= element_rect(fill = NA)
-  )
+)
 
 
 
