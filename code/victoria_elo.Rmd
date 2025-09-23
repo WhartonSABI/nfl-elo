@@ -428,7 +428,7 @@ k_plot_df <- tibble(
 
 # Plot
 ggplot(k_plot_df, aes(x = n, y = K)) +
-  geom_line(color = "lightcoral", size = 1.5) +
+  geom_line(color = "aquamarine4", size = 1.5) +
   geom_vline(xintercept = c(87, 200), linetype = "dashed", color = "slategrey") +
   labs(
     title = "Adaptive Learning Rate Schedule",

@@ -279,12 +279,12 @@ elo_outcome_value <- function(response_mod) {
 
 elo_step <- function(
   belo, relo, response_mod, blocker_K, rusher_K,
-  n_blockers_for_rusher = 1, scale = 400
+  double_team, scale = 400
 ) {
   outcome <- elo_outcome_value(response_mod)
   if (is.na(outcome)) return(c(b = belo, r = relo))   
 
-  blocker_bonus <- 100 * log2(n_blockers_for_rusher)
+  blocker_bonus <- ifelse(double_team == 1, 100, 0)
   adj_belo <- belo + blocker_bonus
 
   exp_blk <- 1 / (1 + 10 ^ ((relo - adj_belo) / scale))
