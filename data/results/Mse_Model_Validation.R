@@ -38,7 +38,7 @@ test_df <- test_df %>%
 # Baseline 'dumb' predictor (win proportion observed)
 
 baseline_mean <- mean(train_df$outcome_score != 0, na.rm = TRUE)
-
+unique(train_df$outcome_score)
 test_df$baseline_pred <- baseline_mean
 
 # Elo Predictor
@@ -106,6 +106,44 @@ ggplot(mse_df, aes(x = Model, y = MSE, fill = Model)) +
     panel.grid.minor = element_blank(),
     legend.position  = "none"
   )
+
+######
+
+mse_df <- tibble::tibble(
+  Model = factor(c("Baseline", "ELO"), 
+                 levels = c("Baseline", "ELO")),
+  MSE = c(mse_base, mse_elo)
+)
+
+ggplot(mse_df, aes(x = Model, y = MSE, fill = Model)) +
+  geom_col(show.legend = FALSE) +
+  geom_text(
+    aes(label = round(MSE, 4)),
+    vjust = -0.3,
+    size = 4,
+    fontface = "bold"   # <- makes numbers bold
+  ) +
+  labs(
+    title = "Naive Win Probability vs Elo",
+    x = "Predictor",
+    y = "Mean Squared Error (MSE)"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Baseline" = "#A8E6A3",  # light greenish
+      "ELO"      = "#006D77"   # dark blue-green
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "none"
+  )
+
 
 
 
