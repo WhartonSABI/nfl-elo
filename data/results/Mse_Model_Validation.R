@@ -121,7 +121,7 @@ ggplot(mse_df, aes(x = Model, y = MSE, fill = Model)) +
     aes(label = round(MSE, 4)),
     vjust = -0.3,
     size = 4,
-    fontface = "bold"   # <- makes numbers bold
+    fontface = "bold"
   ) +
   labs(
     title = "Naive Win Probability vs Elo",
@@ -134,15 +134,17 @@ ggplot(mse_df, aes(x = Model, y = MSE, fill = Model)) +
       "ELO"      = "#006D77"   # dark blue-green
     )
   ) +
-  theme_minimal() +
   theme(
     plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
     axis.title       = element_text(face = "bold", size = 14),
     axis.text        = element_text(size = 12, color = "grey20"),
-    panel.grid.major = element_line(color = "grey85", size = 0.3),
-    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.grid       = element_blank(),
+    panel.border     = element_blank(),   # removes the square border
     legend.position  = "none"
   )
+
 
 
 
