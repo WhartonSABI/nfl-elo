@@ -29,8 +29,8 @@ Read in data
 ```{r}
 #read in data
 new_data <- fread("../data/processed/full_hudl_data.csv")
-# # filter for vickysuzie
-# new_data <- new_data %>% 
+# # filter for vickysuzy
+# new_data <- new_data %>%
 #   filter(week %in% 1:12)
 
 #unique(new_data$week)
@@ -39,7 +39,7 @@ new_data <- fread("../data/processed/full_hudl_data.csv")
 
 Encode sacks
 ```{r}
-print(unique(new_data$event_types))
+#print(unique(new_data$event_types))
 
 sacks <- new_data %>%
   filter(str_detect(event_types, "Sack")) %>% 
@@ -89,18 +89,34 @@ hits <- tackles_qb %>%
 write.csv(hits, '../data/results/hits.csv', row.names = FALSE)
 ```
 
-Look at tackle attempts
+Penalties
 ```{r}
-tackles_attempts <- new_data %>%
-  filter(event_types == "{\"\"\"\"Tackle Attempt\"\"\"\"}" ) %>%
-  filter(opponent_player_name %in% qbs$freeze_frame_player) %>% 
-  filter(freeze_frame_position == "Quarterback") %>%   # Only QB getting tackled
-  left_join(pass_times, by = "play_uuid") %>% 
-  select(game_id, play_uuid, time_since_snap, pass_time, event_player_name,
-         event_x, event_y, freeze_frame_x, freeze_frame_y,
-         freeze_frame_position, event_types, opponent_player_name) %>% 
-  anti_join(sacks, by = "play_uuid") %>% 
-  anti_join(hits, by = "play_uuid")
+
+unique(new_data$event_penalty_type)
+block_pens <- c("Offensive Holding", "Illegal Use of Hands", "Chop Block", 
+                "Face Mask (15 Yards)", "Clipping")
+
+rush_pens <- c("Illegal Use of Hands", "Face Mask (15 Yards)", "Defensive Holding")
+
+penalty_flags <- new_data %>%
+  filter(!is.na(event_penalty_type)) %>%
+  mutate(event_penalty_type = str_remove_all(event_penalty_type, "[\\{\\}\"]")) %>%
+  separate_rows(event_penalty_type, sep = ",\\s*") %>%
+  select(game_id, play_uuid, event_player_name, event_penalty_type) %>%
+  distinct()
+
+blocker_penalties <- penalty_flags %>%
+  filter(event_penalty_type %in% block_pens) %>%
+  mutate(blocker_penalty = 1L) %>%
+  rename(blocker_name = event_player_name) %>%
+  select(game_id, play_uuid, blocker_name, blocker_penalty)
+
+# Rusher penalties
+rusher_penalties <- penalty_flags %>%
+  filter(event_penalty_type %in% rush_pens) %>%
+  mutate(rusher_penalty = 1L) %>%
+  rename(rusher_name = event_player_name) %>%
+  select(game_id, play_uuid, rusher_name, rusher_penalty)
 ```
 
 Filter 
@@ -164,11 +180,11 @@ matchups_all <- engagements %>%
   #filter(player_position %in% c("Defensive Lineman", "Linebacker")) %>%  # only keep defenders
   group_by(play_uuid, player_id, opponent_player_id) %>%
   summarize(
-  rusher_idx = which(freeze_frame_position %in% c("Defensive Lineman", "Linebacker"))[1],
+  rusher_idx = which(event_player_position %in% c("Defensive Lineman", "Linebacker"))[1],
   blocker_idx = which(opponent_position == "Offensive Lineman")[1],
 
   rusher_id = if (!is.na(rusher_idx)) player_id[rusher_idx] else NA_integer_,
-  rusher_name = if (!is.na(rusher_idx)) freeze_frame_player[rusher_idx] else NA_character_,
+  rusher_name = if (!is.na(rusher_idx)) event_player_name[rusher_idx] else NA_character_,
 
   blocker_id = if (!is.na(blocker_idx)) opponent_player_id[blocker_idx] else NA_integer_,
   blocker_name = if (!is.na(blocker_idx)) opponent_player_name[blocker_idx] else NA_character_,
@@ -188,13 +204,6 @@ matchups_all <- engagements %>%
 
 matchups_all <- matchups_all %>%
   drop_na(blocker_idx) 
-
-blocker_counts <- matchups_all %>%
-  group_by(game_id, play_uuid, rusher_id) %>%
-  summarize(n_blockers_for_rusher = n(), .groups = "drop")
-
-matchups_all <- matchups_all %>%
-  left_join(blocker_counts, by = c("game_id", "play_uuid", "rusher_id"))
 ```
 Clear memory
 ```{r}
@@ -213,7 +222,42 @@ pass_times <- engagements %>%
 
 matchups_all <- matchups_all %>%
   left_join(pass_times, by = "play_uuid")
+
 ```
+Add penalties to matchups_all
+```{r}
+
+```
+
+
+Get double teams
+```{r}
+double_team_pairs <- matchups_all %>%
+  inner_join(matchups_all, by = c("game_id", "play_uuid", "rusher_id"), suffix = c("_1", "_2")) %>%
+  filter(blocker_id_1 != blocker_id_2) %>%
+  filter(
+    Engage_start_1 < Engage_end_2 &
+    Engage_start_2 < Engage_end_1
+  ) %>%
+  select(game_id, play_uuid, rusher_id, blocker_id_1, blocker_id_2)
+
+double_team <- double_team_pairs %>%
+  pivot_longer(cols = starts_with("blocker_id"), values_to = "blocker_id") %>%
+  distinct(game_id, play_uuid, rusher_id, blocker_id) %>%
+  group_by(game_id, play_uuid, rusher_id) %>%
+  summarize(double_team = 1L, .groups = "drop")
+
+matchups_all <- matchups_all %>%
+  add_count(game_id, play_uuid, rusher_id, name = "n_blockers_for_rusher") %>%
+  mutate(double_team = if_else(n_blockers_for_rusher > 1, 1L, 0L))
+
+# matchups_all <- matchups_all %>%
+#   left_join(blocker_counts, by = c("game_id", "play_uuid", "rusher_id")) %>%
+#   left_join(double_team, by = c("game_id", "play_uuid", "rusher_id")) %>%
+#   mutate(double_team = replace_na(double_team, 0L))
+```
+
+
 Add a column to each engagement with each play nested in that row's entry
 
 ```{r}
@@ -233,11 +277,15 @@ matchups_all_nested <- matchups_all_nested %>%
   arrange(game_id, event_game_index)
 
 ```
+
+
+
+Make final results table 
 ```{r}
 
 #function to calculate pass block win: encode rusher wins
 safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
-                      game_id, play_id, event_game_index, n_blockers_for_rusher) {
+                      game_id, play_id, event_game_index, double_team) {
   tryCatch({
     if (is.na(start) || is.na(end) || is.na(pass_time) || !is.data.frame(tracking)) {
       return(tibble(
@@ -249,7 +297,7 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
         beat_time    = NA_real_,
         beat_dist    = NA_real_,
         rusher_won   = 0L, 
-        n_blockers_for_rusher = n_blockers_for_rusher
+        double_team = double_team
       ))
     }
 
@@ -300,7 +348,8 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
         blocker_name = blocker,
         beat_time    = NA_real_,
         beat_dist    = NA_real_,
-        rusher_won   = 0L
+        rusher_won   = 0L,
+        double_team = double_team
       ))
     }
 
@@ -322,7 +371,7 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
         beat_time    = as.numeric(wide_rb$time_since_snap[idx[1]]),
         beat_dist    = as.numeric(d_r[idx[1]]),
         rusher_won   = 1L,
-        n_blockers_for_rusher = n_blockers_for_rusher
+        double_team = double_team
       )
     } else {
       tibble(
@@ -334,7 +383,7 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
         beat_time    = NA_real_,
         beat_dist    = NA_real_,
         rusher_won   = 0L,
-        n_blockers_for_rusher = n_blockers_for_rusher
+        double_team = double_team
       )
     }
 
@@ -348,7 +397,7 @@ safe_eval <- function(rusher, blocker, start, end, pass_time, tracking,
       beat_time    = NA_real_,
       beat_dist    = NA_real_,
       rusher_won   = 0L,
-      n_blockers_for_rusher = n_blockers_for_rusher
+      double_team = double_team
     )
   })
 }
@@ -365,7 +414,7 @@ results2 <- future_pmap_dfr(
     tracking   = matchups_all_nested$data,
     game_id    = matchups_all_nested$game_id, 
     play_id    = matchups_all_nested$play_uuid,
-    n_blockers_for_rusher = matchups_all_nested$n_blockers_for_rusher,
+    double_team = matchups_all_nested$double_team,
     event_game_index = matchups_all_nested$event_game_index 
   ),
   safe_eval,
@@ -374,6 +423,39 @@ results2 <- future_pmap_dfr(
 
 cat("Parallel evaluation completed. Processing", nrow(results2), "results.\n")
 ```
+Add penalty 
+```{r}
+results2 <- results2 %>%
+  left_join(rusher_penalties, by = c("game_id", "play_id"="play_uuid", "rusher_name")) %>%
+  left_join(blocker_penalties, by = c("game_id", "play_id"="play_uuid", "blocker_name")) %>%
+  mutate(
+    rusher_penalty = replace_na(rusher_penalty, 0L),
+    blocker_penalty = replace_na(blocker_penalty, 0L),
+    penalty = if_else(rusher_penalty == 1L | blocker_penalty == 1L, 1L, 0L)
+  )
+
+results2 <- results2 %>%
+  mutate(
+    rusher_won = case_when(
+      rusher_won == 1L & rusher_penalty == 1L ~ 0L,  # Rusher won but committed a penalty → switch to loss
+      rusher_won == 0L & blocker_penalty == 1L ~ 1L, # Blocker won but committed a penalty → switch to rusher win
+      TRUE ~ rusher_won
+    )
+  )
+
+```
+
+Find win freq of double teams
+```{r}
+double_team_win_freq <- results2 %>%
+  group_by(double_team) %>%
+  summarise(
+    win_freq = mean(rusher_won, na.rm = TRUE),
+    total_engagements = n(),
+    .groups = "drop"
+  )
+```
+
 
 ```{r}
 write.csv(results2, '../data/results/results2.csv')

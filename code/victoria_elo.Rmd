@@ -1,6 +1,6 @@
 ---
 title: "ELO updates"
-output: html
+output: html_document
 ---
 Load in matchups
 ```{r}
@@ -38,9 +38,9 @@ results2 <- results2 %>%
 results2 <- results2 %>%
   mutate(
     outcome_score = case_when(
-      sack == 1L         ~ 2.0,
-      hit == 1L          ~ 0.8,
-      rusher_won == 1L   ~ 0.4,
+      sack == 1L         ~ 1.0,
+      hit == 1L          ~ 0.4,
+      rusher_won == 1L   ~ 0.2,
       TRUE               ~ 0.0
     )
   )
@@ -56,12 +56,6 @@ results_cleaned <- results2 %>%
   drop_na(game_id, rusher_name, blocker_name) %>% 
   arrange(game_id, play_id, event_game_index) %>% 
   select(-sack, -hit, -rusher_won)
-
-#get distinct interactions for double teams
-outcome_summary <- results_cleaned %>%
-  group_by(game_id, play_id, rusher_name) %>%
-  filter(n_blockers_for_rusher > 1) %>%
-  summarise(outcomes = n_distinct(outcome_score), .groups = "drop")
 
 #results_cleaned <- results_cleaned %>%
   #left_join(outcome_summary, by = c("game_id", "play_id", "rusher_name"))
@@ -100,14 +94,11 @@ adaptive_K_prov <- function(n, K_start, K_min, n_prov, n_decay) {
 #updated elo function to include K and double teams
 elo_step <- function(
   belo, relo, outcome_score, blocker_K, rusher_K,
-  n_blockers_for_rusher, scale = 319
+  double_team, scale = 319
 ) {
   if (is.na(outcome_score)) return(c(b = belo, r = relo))
 
-  blocker_bonus <- ifelse(is.na(n_blockers_for_rusher) || n_blockers_for_rusher <= 0,
-                          0,
-                          100 * log2(n_blockers_for_rusher))
-
+  blocker_bonus <- ifelse(double_team == 1, 100, 0)
   adj_belo <- belo + blocker_bonus
 
   #calc based on rusher win prob
@@ -142,8 +133,8 @@ results_cleaned <- results_cleaned %>%
 #compute k for rusher and blocker
 results_cleaned <- results_cleaned %>%
   mutate(
-    rusher_k = adaptive_K_prov(n = rusher_row, K_start = 20, K_min = 7, n_prov = 87, n_decay = 200),
-    blocker_k = adaptive_K_prov(blocker_row, K_start = 20, K_min = 7, n_prov = 87, n_decay = 200)
+    rusher_k = adaptive_K_prov(n = rusher_row, K_start = 20, K_min = 10, n_prov = 87, n_decay = 200),
+    blocker_k = adaptive_K_prov(blocker_row, K_start = 20, K_min = 10, n_prov = 87, n_decay = 200)
   )
 ```
 
@@ -169,7 +160,7 @@ for (i in seq_len(nrow(results_cleaned))) {
   out  <- results_cleaned$outcome_score[i]
   r_K  <- results_cleaned$rusher_k[i]
   b_K  <- results_cleaned$blocker_k[i]
-  n_bl <- results_cleaned$n_blockers_for_rusher[i]
+  d_t <- results_cleaned$double_team[i]
 
   if (is.na(r_id) || is.na(b_id) || is.na(out)) next
 
@@ -179,7 +170,7 @@ for (i in seq_len(nrow(results_cleaned))) {
   elo_history$before_rusher_elo[i]  <- r_elo
   elo_history$before_blocker_elo[i] <- b_elo
 
-  new <- elo_step(b_elo, r_elo, outcome_score = out, blocker_K = b_K, rusher_K = r_K, n_blockers_for_rusher = n_bl)
+  new <- elo_step(b_elo, r_elo, outcome_score = out, blocker_K = b_K, rusher_K = r_K, double_team = d_t)
 
   if (!any(is.na(new))) {
   elo_vec[[r_id]] <- new["r"]
@@ -220,11 +211,11 @@ elo_labeled <- elo_df %>%
 #get top 10
 top_rushers <- elo_labeled %>%
   filter(role == "Rusher") %>%
-  slice_max(final_elo, n = 10)
+  slice_max(final_elo, n = 12)
 
 top_blockers <- elo_labeled %>%
   filter(role == "Blocker") %>%
-  slice_max(final_elo, n = 10)
+  slice_max(final_elo, n = 12)
 ```
 
 ```{r}
@@ -271,10 +262,10 @@ elo_top_blocker <- elo_top %>% filter(role == "Blocker")
 ggplot(elo_top_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
-  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
                         name = "Player") +
   labs(
-    title    = "Top 10 Rushers: Elo Trajectories",
+    title    = "Top 10 Rushers: ELO Trajectories",
     subtitle = "Evolution of Elo rating over successive plays",
     x        = "Observation Number",
     y        = "Elo Rating"
@@ -298,10 +289,10 @@ ggplot(elo_top_rusher, aes(x = as.numeric(interaction_n), y = elo, color = playe
 ggplot(elo_top_blocker, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
-  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
                         name = "Player") +
   labs(
-    title    = "Top 10 Blockers: Elo Trajectories",
+    title    = "Top 10 Blockers: ELO Trajectories",
     subtitle = "Evolution of Elo rating over successive plays",
     x        = "Observation Number",
     y        = "Elo Rating"
@@ -346,7 +337,7 @@ sample_blocker <- elo_long %>%
 ggplot(sample_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
-  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
                         name = "Player") +
   labs(
     title    = "Random 10 Rushers: ELO Trajectories",
@@ -373,7 +364,7 @@ ggplot(sample_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player
 ggplot(sample_blocker, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
-  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
                         name = "Player") +
   labs(
     title    = "Random 10 Blockers: Elo Trajectories",
@@ -437,13 +428,112 @@ k_plot_df <- tibble(
 
 # Plot
 ggplot(k_plot_df, aes(x = n, y = K)) +
-  geom_line(color = "lightcoral", size = 1.5) +
+  geom_line(color = "aquamarine4", size = 1.5) +
   geom_vline(xintercept = c(87, 200), linetype = "dashed", color = "slategrey") +
   labs(
     title = "Adaptive Learning Rate Schedule",
     x = "Number of Interactions (n)",
     y = "Learning Rate (K)"
   ) +
-  theme_minimal()
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    axis.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 12),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank()
+  )
+```
+
+Log loss validation
+```{r}
+n_total <- nrow(elo_history)
+n_train <- floor(0.8 * n_total)
+
+train_df <- elo_history[1:n_train, ]
+test_df  <- elo_history[(n_train + 1):n_total, ]
+
+final_rusher_elo <- train_df %>%
+  group_by(rusher_name) %>%
+  slice_tail(n = 1) %>%
+  select(rusher_name, after_rusher_elo) %>%
+  rename(rusher_elo_pred = after_rusher_elo)
+
+final_blocker_elo <- train_df %>%
+  group_by(blocker_name) %>%
+  slice_tail(n = 1) %>%
+  select(blocker_name, after_blocker_elo) %>%
+  rename(blocker_elo_pred = after_blocker_elo)
+
+test_df <- test_df %>%
+  left_join(final_rusher_elo, by = "rusher_name") %>%
+  left_join(final_blocker_elo, by = "blocker_name")
+
+baseline_mean <- mean(train_df$outcome_score != 0, na.rm = TRUE)
+test_df$baseline_pred <- baseline_mean
+
+scale <- 319
+test_df$blocker_bonus <- ifelse(test_df$double_team == 1, 100, 0)
+test_df$adj_belo <- test_df$blocker_elo_pred + test_df$blocker_bonus
+
+test_df$rusher_win_prob <- 1 / (1 + 10^((test_df$adj_belo - test_df$rusher_elo_pred) / scale))
+
+
+test_df$blocker_bonus <- ifelse(test_df$double_team == 1, 100, 0)
+test_df$adj_belo <- test_df$before_blocker_elo + test_df$blocker_bonus
+
+test_df$updating_pred <- 1 / (1 + 10^((test_df$adj_belo - test_df$before_rusher_elo) / scale))
+
+# --- Compute MSE ---
+mse_base         <- mean((test_df$baseline_pred - test_df$outcome_score)^2, na.rm = TRUE)
+mse_elo          <- mean((test_df$rusher_win_prob - test_df$outcome_score)^2, na.rm = TRUE)
+mse_updating_elo <- mean((test_df$updating_pred - test_df$outcome_score)^2, na.rm = TRUE)
+
+cat("Baseline MSE:", mse_base, "\n")
+cat("ELO MSE:", mse_elo, "\n")
+cat("Updating ELO MSE:", mse_updating_elo, "\n")
+
+
+```
+
+
+```{r}
+# --- Comparison DataFrame (Baseline vs Elo only) ---
+mse_df <- tibble(
+  Model = factor(c("Baseline", "ELO"),
+                 levels = c("Baseline", "ELO")),
+  MSE   = c(mse_base, mse_elo)
+)
+
+# --- Custom colors from mako palette ---
+library(viridisLite)
+custom_cols <- mako(6)
+chosen_cols <- c(custom_cols[4], custom_cols[5])
+names(chosen_cols) <- c("Baseline", "ELO")
+
+# --- Plot ---
+ggplot(mse_df, aes(x = Model, y = MSE, fill = Model)) +
+  geom_col(width = 0.6, alpha = 0.9, show.legend = FALSE) +
+  geom_text(aes(label = round(MSE, 4)), vjust = -0.5, size = 5, fontface = "bold") +
+  scale_fill_manual(values = chosen_cols) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +  # add 10% space on top
+  labs(
+    title = "Model Validation: MSE Comparison",
+    subtitle = "Baseline vs ELO",
+    x = NULL,
+    y = "Mean Squared Error"
+  ) +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text     = element_text(size = 14, color = "grey20"),
+    axis.title.y  = element_text(face = "bold", size = 14)
+  )
+```
+
+```{r}
+improvement_pct <- ((mse_base - mse_elo) / mse_base) * 100
+cat("Elo reduces MSE by", round(improvement_pct, 2), "% compared to baseline.\n")
 ```
 
