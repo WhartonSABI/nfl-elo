@@ -20,9 +20,9 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 ```
 
 ```{r}
-full_data <- data.table::fread("../data/raw/big_data_bowl_2023_AllWeeks.csv")
+full_data <- data.table::fread("/Users/maximiliangebauer/Downloads/big_data_bowl_2023_AllWeeks.csv")
 
-players2 <- data.table::fread("../data/raw/players-2.csv")
+players2 <- data.table::fread("/Users/maximiliangebauer/Downloads/players-2.csv")
 ```
 
 ```{r}
@@ -71,7 +71,7 @@ interactions_pr <- full_data %>%
     rusher_nflId  = as.character(pff_nflIdBlockedPlayer),
     outcome       = response
   ) %>%
-  distinct() %>%                        # <<< deduplicate frames!
+  distinct() %>%                      
   filter(rusher_nflId %in% valid_rushers)
 penalties_long <- full_data %>%
   select(gameId, playId,
@@ -117,8 +117,6 @@ interactions_pr <- interactions_pr %>%
 setDT(interactions_pr)
 
 elo_vec <- setNames(init_play_ratings$Player_Elo, init_play_ratings$nflId)
-
-
 ```
 
 ```{r}
@@ -577,15 +575,15 @@ counts_final
 ```{r}
 all_results_complete <- all_results %>%
   left_join(counts_final, by = "nflId")
-all_results_complete
+test_all <- all_results_complete
 ```
 
 ```{r}
-write_csv(all_results_complete, "../data/results/elo_prelim_results.csv")
+write_csv(all_results_complete, "elo_prelim_results.csv")
 ```
 
 ```{r}
-test_all <- read.csv("../data/results/elo_prelim_results.csv")
+test_all <- read.csv("/Users/maximiliangebauer/Documents/nfl_elo/code/elo_prelim_results.csv")
 test_all
 
 max_data <- max_data %>%
@@ -742,9 +740,112 @@ rusher_ewma1 <- rusher_ewma %>%
             by = c("rusher_nflId" = "nflId")) %>%
   arrange(desc(ewma_elo))
 
-rusher_ewma1 %>%
-  filter(num_observations>199)
+rusher_ewma <- rusher_ewma %>%
+  select(nflId = rusher_nflId, ewma_elo)
+
+blocker_ewma <- blocker_ewma %>%
+  select(nflId = blocker_nflId, ewma_elo)
+
+ewma_data <- rbind(rusher_ewma,blocker_ewma)
+
+new_test <- test_all%>%mutate(nflId=as.character(nflId)) %>%
+  left_join(ewma_data, by = "nflId")
+
+new_test
 ```
+
+```{r}
+blocker_ewma_2 <- elo_history %>%
+  arrange(blocker_nflId, blocker_row) %>%
+  group_by(blocker_nflId) %>%
+  mutate(
+    num_observations = n(),
+    ewma_elo = {
+      series <- stats::filter(after_blocker_elo,
+                              filter = alpha,
+                              method = "recursive",
+                              init   = first(after_blocker_elo))
+    }
+  ) %>%
+  ungroup()
+
+blocker_ewma_22 <- blocker_ewma_2 %>%
+  left_join(players2 %>% 
+              select(nflId, displayName, officialPosition) %>%
+              mutate(nflId = as.character(nflId)),
+            by = c("blocker_nflId" = "nflId"))
+
+topper <- blocker_ewma_22 %>%
+  group_by(blocker_nflId) %>%
+  arrange(desc(blocker_row)) %>%
+  slice_head(n=1) %>%
+  filter(num_observations>199) %>%
+  arrange(desc(ewma_elo)) %>%
+  ungroup() %>%
+  slice_head(n=10) %>%
+  pull(blocker_nflId)
+
+blocker_ewma_sub <- blocker_ewma_22 %>%
+  filter(blocker_nflId %in% topper)
+
+ggplot(blocker_ewma_sub,aes(x=blocker_row,y=ewma_elo,color=displayName,group=displayName)) +
+  geom_line(linewidth=1) +
+  theme_minimal()
+
+rusher_ewma_2 <- elo_history %>%
+  arrange(rusher_nflId, rusher_row) %>%
+  group_by(rusher_nflId) %>%
+  mutate(
+    num_observations = n(),
+    ewma_elo = {
+      series <- stats::filter(after_rusher_elo,
+                              filter = alpha,
+                              method = "recursive",
+                              init   = first(after_rusher_elo))
+    }
+  ) %>%
+  ungroup()
+
+rusher_ewma_22 <- rusher_ewma_2 %>%
+  left_join(players2 %>% 
+              select(nflId, displayName, officialPosition) %>%
+              mutate(nflId = as.character(nflId)),
+            by = c("rusher_nflId" = "nflId"))
+
+topper1 <- rusher_ewma_22 %>%
+  group_by(rusher_nflId) %>%
+  arrange(desc(rusher_row)) %>%
+  slice_head(n=1) %>%
+  filter(num_observations>199) %>%
+  arrange(desc(ewma_elo)) %>%
+  ungroup() %>%
+  slice_head(n=10) %>%
+  pull(rusher_nflId)
+
+rusher_ewma_sub <- rusher_ewma_22 %>%
+  filter(rusher_nflId %in% topper1)
+
+ggplot(rusher_ewma_sub,aes(x=rusher_row,y=ewma_elo,color=displayName,group=displayName)) +
+  geom_line(linewidth=1) +
+  theme_minimal()
+
+rusher_ewma_22 %>%
+  filter(rusher_nflId %in% topper1) %>%
+  group_by(rusher_nflId) %>%
+  arrange(desc(rusher_row)) %>%
+  slice_head(n=1) %>%
+  select(displayName,ewma_elo,num_observations,officialPosition) %>%
+  arrange(desc(ewma_elo))
+
+blocker_ewma_22 %>%
+  filter(blocker_nflId %in% topper) %>%
+  group_by(blocker_nflId) %>%
+  arrange(desc(blocker_row)) %>%
+  slice_head(n=1) %>%
+  select(displayName,ewma_elo,num_observations,officialPosition) %>%
+  arrange(desc(ewma_elo))
+```
+
 
 ```{r}
 scale <- 400
@@ -1065,6 +1166,7 @@ bt_mm_logloss_empirical <- df_bt_adj %>%
 
 bt_mm_logloss_empirical
 ```
+
 ```{r}
 library(dplyr)
 library(yardstick)   # for mn_log_loss()
@@ -1118,7 +1220,7 @@ bt_fit <- glm(
 ```
 
 ```{r}
-# source("../data/raw/get_nfl_player_contract_by_season.R")
+source("/Users/maximiliangebauer/Downloads/get_nfl_player_contract_by_season.R")
 ```
 
 ```{r}

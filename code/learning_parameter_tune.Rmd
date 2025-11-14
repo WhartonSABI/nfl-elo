@@ -45,13 +45,13 @@ library(lubridate)    # optional, but you loaded it earlier
 ```
 
 ```{r}
-full_data <- data.table::fread("../data/raw/big_data_bowl_2023_AllWeeks.csv")
+full_data_1 <- data.table::fread("/Users/maximiliangebauer/Downloads/big_data_bowl_2023_AllWeeks.csv")
 
-players2 <- data.table::fread("../data/raw/players-2.csv")
+players2 <- data.table::fread("/Users/maximiliangebauer/Downloads/players-2.csv")
 ```
 
 ```{r}
-full_data <- full_data %>%
+full_data <- full_data_1 %>%
   mutate(
     response = case_when(
       pff_sackAllowed      == 1 ~ "sack",
@@ -181,7 +181,97 @@ interactions_pr <- interactions_pr %>%
     )
   ) %>%
   select(-rusher_penalty, -blocker_penalty)
+
+blocks_data <- full_data %>% 
+  filter(!is.na(pff_hurry) | !is.na(pff_hit)  | !is.na(pff_sack) | !is.na(pff_beatenByDefender) | !is.na(pff_sackAllowed) | !is.na(pff_hitAllowed) | !is.na(pff_hurryAllowed)) %>%
+  select(gameId, playId, pff_nflIdBlockedPlayer, pff_sackAllowed, pff_hitAllowed, pff_hurryAllowed, pff_beatenByDefender,pff_hit,pff_hurry,pff_sack,nflId,officialPosition,displayName,pff_blockType) %>%
+  group_by(gameId,playId) %>%
+  distinct() %>%
+  ungroup()
+
+def_stats <- blocks_data %>%
+  select(gameId, playId, nflId,
+         pff_sack_def = pff_sack,
+         pff_hit_def  = pff_hit,
+         pff_hurry_def= pff_hurry) %>%
+  distinct()
+
+blocks_data_checked <- blocks_data %>%
+  left_join(
+    def_stats,
+    by = c("gameId", "playId", "pff_nflIdBlockedPlayer" = "nflId")
+  ) %>%
+  mutate(
+    block_check = case_when(
+      is.na(pff_nflIdBlockedPlayer) ~ NA_character_,
+      pff_sackAllowed  == pff_sack_def &
+      pff_hitAllowed   == pff_hit_def  &
+      pff_hurryAllowed == pff_hurry_def ~ "all match",
+      TRUE ~ str_trim(paste(
+        if_else(pff_sackAllowed   != pff_sack_def,   "sack",  ""),
+        if_else(pff_hitAllowed    != pff_hit_def,    "hit",   ""),
+        if_else(pff_hurryAllowed  != pff_hurry_def,  "hurry", "")
+      ))
+    )
+  )
+
+blocks_data_checked2 <- blocks_data %>%
+  left_join(
+    def_stats,
+    by = c("gameId", "playId", "pff_nflIdBlockedPlayer" = "nflId")
+  ) %>%
+  group_by(gameId, playId) %>%
+  mutate(
+    true_ids = list(
+      pff_nflIdBlockedPlayer[
+        pff_sackAllowed  == pff_sack_def &
+        pff_hitAllowed   == pff_hit_def  &
+        pff_hurryAllowed == pff_hurry_def
+      ]
+    ),
+    block_check = case_when(
+      is.na(pff_nflIdBlockedPlayer) ~ NA_character_,
+      pff_sackAllowed  == pff_sack_def &
+      pff_hitAllowed   == pff_hit_def  &
+      pff_hurryAllowed == pff_hurry_def   ~ "all match",
+      pff_nflIdBlockedPlayer %in% true_ids[[1]] ~ NA_character_,
+      TRUE ~ "mismatch"
+    )
+  ) %>%
+  ungroup() %>%
+  select(-true_ids)
+
+valid_blocks <- blocks_data_checked2 %>%
+  filter(!is.na(pff_nflIdBlockedPlayer))
+
+overall_frac <- valid_blocks %>%
+  summarise(frac_match = mean(block_check == "all match", na.rm = TRUE)) %>%
+  pull(frac_match)
+
+bad_rows <- valid_blocks %>%
+  filter(block_check != "all match") %>%
+  select(gameId, playId, pff_nflIdBlockedPlayer, nflId)
+
+bad_rows <- bad_rows %>%
+  mutate(
+    nflId = as.character(nflId),
+    pff_nflIdBlockedPlayer = as.character(pff_nflIdBlockedPlayer)
+  )
+
+interactions_pr <- interactions_pr %>%
+  anti_join(
+    bad_rows,
+    by = c(
+      "gameId"        = "gameId",
+      "playId"        = "playId",
+      "rusher_nflId"  = "pff_nflIdBlockedPlayer",
+      "blocker_nflId" = "nflId"
+    )
+  )
 ```
+
+
+
 
 ```{r}
 interactions_pr_1 <- interactions_pr
@@ -197,8 +287,8 @@ interactions_pr_1 <- interactions_pr_1 %>%
   ungroup()
 
 adaptive_K_prov <- function(n,
-                            K_start = 20,
-                            K_min   = 10,
+                            K_start = 30,
+                            K_min   = 20,
                             n_prov  = 50,
                             n_decay = 100) {
   k <- ifelse(
@@ -215,15 +305,15 @@ adaptive_K_prov <- function(n,
 interactions_pr_1 <- interactions_pr_1 %>%
   group_by(rusher_nflId) %>%
     mutate(rusher_k  = adaptive_K_prov(rusher_row,
-                                      K_start = 20,
-                                      K_min   = 10,
+                                      K_start = 30,
+                                      K_min   = 20,
                                       n_prov  = 50,
                                       n_decay = 100)) %>%
   ungroup() %>%
   group_by(blocker_nflId) %>%
     mutate(blocker_k = adaptive_K_prov(blocker_row,
-                                      K_start = 20,
-                                      K_min   = 10,
+                                      K_start = 30,
+                                      K_min   = 20,
                                       n_prov  = 50,
                                       n_decay = 100)) %>%
   ungroup()
@@ -274,7 +364,7 @@ elo_outcome_value <- function(response_mod) {
 }
 
 ## --- 1.  hyper-parameter ---------------------------------------------
-halflife <- 30                            # plays; tune this later
+halflife <- 40                            # plays; tune this later
 alpha    <- 1 - exp(log(0.5) / halflife)  # EWMA weight
 
 ## --- 2.  initialise two vectors --------------------------------------
@@ -286,9 +376,9 @@ raw_elo     <- setNames(ifelse(all_ids %in% rushers,  800, 1200), all_ids)
 smooth_elo  <- raw_elo                                # start equal
 
 ## --- 3.  helper -------------------------------------------------------
-elo_step <- function(belo, relo, outcome, bK, rK,
+elo_step <- function(belo, relo, response_mod, bK, rK,
                      n_blockers_for_rusher = 1, scale = 400) {
-  res_val <- elo_outcome_value(outcome)
+  res_val <- elo_outcome_value(response_mod)
   if (is.na(res_val)) return(c(b = belo, r = relo))          # no change
 
   adj_belo   <- belo + 100 * log2(n_blockers_for_rusher)     # bonus
@@ -427,6 +517,232 @@ loss_sm$overall
 loss_raw$per_class
 loss_sm$per_class
 ```
+
+```{r}
+rusher_ids <- players2 %>%
+  filter(officialPosition %in% c("DE", "DT", "OLB", "ILB", "NT", "LB", "MLB", "FS", "SS", "CB", "DB")) %>%
+  pull(nflId) %>% as.character()
+
+top_rusher_means <- elo_history %>%
+  filter(rusher_nflId %in% rusher_ids) %>%
+  group_by(rusher_nflId) %>%
+  filter(any(rusher_row > 199)) %>%
+  summarise(mean_elo = mean(after_rusher_raw, na.rm = TRUE)) %>%
+  arrange(desc(mean_elo)) %>%
+  slice_head(n = 10)
+
+top_rusher_ids <- top_rusher_means$rusher_nflId
+
+rusher_trajectories <- elo_history %>%
+  filter(rusher_nflId %in% top_rusher_ids) %>%
+  left_join(players2 %>% select(nflId, displayName) %>% mutate(nflId=as.character(nflId)), by = c("rusher_nflId" = "nflId"))
+
+ggplot(rusher_trajectories, aes(x = rusher_row, y = after_rusher_raw, color = displayName, group = displayName)) +
+  geom_line(size = 1) +
+  labs(
+    title = "Top 10 Rushers: Elo Trajectories",
+    x = "Observation Number",
+    y = "Elo Rating",
+    color = "Player"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+blocker_ids <- players2 %>%
+  filter(officialPosition %in% c("C","G","T","TE")) %>%
+  pull(nflId) %>% as.character()
+
+top_blocker_means <- elo_history %>%
+  filter(blocker_nflId %in% blocker_ids) %>%
+  group_by(blocker_nflId) %>%
+  filter(any(blocker_row > 199)) %>%
+  summarise(mean_elo = mean(after_blocker_raw, na.rm = TRUE)) %>%
+  arrange(desc(mean_elo)) %>%
+  slice_head(n = 10)
+
+top_blocker_ids <- top_blocker_means$blocker_nflId
+
+blocker_trajectories <- elo_history %>%
+  filter(blocker_nflId %in% top_blocker_ids) %>%
+  left_join(players2 %>% select(nflId, displayName) %>% mutate(nflId=as.character(nflId)), by = c("blocker_nflId" = "nflId"))
+
+ggplot(blocker_trajectories, aes(x = blocker_row, y = after_blocker_raw, color = displayName, group = displayName)) +
+  geom_line(size = 1) +
+  labs(
+    title = "Top 10 Blocker: Elo Trajectories",
+    x = "Observation Number",
+    y = "Elo Rating",
+    color = "Player"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+rusher_trajectories %>%
+  group_by(rusher_nflId) %>%
+  arrange(desc(rusher_row)) %>%
+  slice_head(n=1) %>%
+  ungroup() %>%
+  filter(rusher_row>199) %>%
+  summarise(
+    rusher_nflId = rusher_nflId,
+    displayName = displayName,
+    final_elo = after_rusher_raw,
+    num_obs = rusher_row
+  ) %>%
+  arrange(desc(final_elo))
+
+blocker_trajectories %>%
+  group_by(blocker_nflId) %>%
+  arrange(desc(blocker_row)) %>%
+  slice_head(n=1) %>%
+  ungroup() %>%
+  filter(blocker_row>199) %>%
+  summarise(
+    blocker_nflId = blocker_nflId,
+    displayName = displayName,
+    final_elo = after_blocker_raw,
+    num_obs = blocker_row
+  ) %>%
+  arrange(desc(final_elo))
+```
+```{r}
+library(ggplot2)
+library(viridis)
+
+rusher_plot <- ggplot(rusher_trajectories,
+       aes(x = rusher_row,
+           y = after_rusher_raw,
+           color = displayName,
+           group = displayName)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+                        name = "Player") +
+  labs(
+    title    = "Top 10 Rushers: Elo Trajectories",
+    subtitle = "Evolution of Elo rating over successive plays",
+    x        = "Observation Number",
+    y        = "Elo Rating",
+    caption  = "Data: Big Data Bowl 2023"
+  ) +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
+    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right",
+    legend.title     = element_text(face = "bold", size = 12),
+    legend.text      = element_text(size = 10),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA)
+  )
+
+blocker_plot <- ggplot(blocker_trajectories,
+       aes(x = blocker_row,
+           y = after_blocker_raw,
+           color = displayName,
+           group = displayName)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "plasma", begin = 0.1, end = 0.9,
+                        name = "Player") +
+  labs(
+    title    = "Top 10 Blockers: Elo Trajectories",
+    subtitle = "Evolution of Elo rating over successive plays",
+    x        = "Observation Number",
+    y        = "Elo Rating",
+    caption  = "Data: Big Data Bowl 2023"
+  ) +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
+    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right",
+    legend.title     = element_text(face = "bold", size = 12),
+    legend.text      = element_text(size = 10),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA)
+  )
+
+rusher_plot
+blocker_plot
+```
+
+```{r}
+ggsave("blockers_elo_plot_07_23.png", plot = blocker_plot, dpi = 800, width = 6, height = 4, bg = "white")
+ggsave("rushers_elo_plot_07_23.png", plot = rusher_plot, dpi = 800, width = 6, height = 4, bg = "white")
+```
+
+```{r}
+block_final <- elo_history %>%
+  group_by(blocker_nflId) %>%
+  arrange(desc(blocker_row)) %>%
+  slice_head(n=1) %>%
+  ungroup() %>%
+  filter(blocker_row>19)
+
+rush_final <- elo_history %>%
+  group_by(rusher_nflId) %>%
+  arrange(desc(rusher_row)) %>%
+  slice_head(n=1) %>%
+  ungroup() %>%
+  filter(rusher_row>19)
+
+ggplot(block_final,aes(x=after_blocker_raw))+
+  geom_histogram(color="white",fill="steelblue", bins = 30)+
+  theme_minimal()
+
+ggplot(rush_final,aes(x=after_rusher_raw))+
+  geom_histogram(color="white",fill="steelblue", bins = 30)+
+  theme_minimal()
+```
+
+```{r}
+elo_history %>%
+  group_by(blocker_nflId) %>%
+  arrange(desc(blocker_row)) %>%
+  slice_head(n=1) %>%
+  ungroup() %>%
+  ggplot(aes(x=blocker_row)) +
+  geom_histogram(color="white", fill="steelblue", bins = 30) +
+  theme_minimal()
+
+elo_history %>%
+  group_by(blocker_nflId) %>%
+  arrange(desc(blocker_row)) %>%
+  slice_head(n=1) %>%
+  ungroup() %>%
+  pull(blocker_row) %>%
+  summary()
+
+elo_history %>%
+  group_by(rusher_nflId) %>%
+  arrange(desc(rusher_row)) %>%
+  slice_head(n=1) %>%
+  ungroup() %>%
+  ggplot(aes(x=rusher_row)) +
+  geom_histogram(color="white", fill="steelblue", bins = 30) +
+  theme_minimal()
+
+elo_history %>%
+  group_by(rusher_nflId) %>%
+  arrange(desc(rusher_row)) %>%
+  slice_head(n=1) %>%
+  ungroup() %>%
+  pull(rusher_row) %>%
+  summary()
+```
+
+
 
 ```{r}
 get_rating <- function(v, id, default) {
@@ -646,7 +962,7 @@ grid_results <- future_pmap_dfr(
 ############################################################################
 # 8 · log, pick best, refit on all data, report
 ############################################################################
-write_csv(grid_results, "../data/results/elo_tuning_log.csv")
+write_csv(grid_results, "elo_tuning_log.csv")
 
 best_row <- grid_results %>% arrange(.estimate) %>% slice(1)
 ```
@@ -677,6 +993,20 @@ grid_results %>%
   arrange(-desc(.estimate))
 
 
+```
+
+```{r}
+watt<-elo_history%>%filter(rusher_nflId=="37084")
+table(watt$response_mod)
+```
+
+```{r}
+total <- 18+10+11+1+225
+18 / total
+10 / total
+11 / total
+1 / total
+225 / total
 ```
 
 
