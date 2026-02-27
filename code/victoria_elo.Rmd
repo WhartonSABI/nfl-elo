@@ -389,6 +389,75 @@ ggplot(sample_blocker, aes(x = as.numeric(interaction_n), y = elo, color = playe
   )
 ```
 ```{r}
+library(zoo)
+#running average
+elo_averages <- elo_top %>% 
+  group_by(player_name) %>%
+  arrange(interaction_n) %>%
+  mutate(elo_avg = rollapply(elo, width = 20, FUN = mean, align = "right", partial = TRUE)) %>%
+  ungroup()
+
+elo_averages_rusher <- elo_averages %>% filter(role == "Rusher")
+elo_averages_blocker <- elo_averages %>% filter(role == "Blocker")
+
+ggplot(elo_averages_rusher, aes(x = as.numeric(interaction_n), y = elo_avg, color = player_name)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
+                        name = "Player") +
+  labs(
+    title    = "Top 10 Rushers: ELO Trajectories",
+    subtitle = "Evolution of Elo rating over successive plays",
+    x        = "Observation Number",
+    y        = "Elo Rating"
+  ) +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
+    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right",
+    legend.title     = element_text(face = "bold", size = 12),
+    legend.text      = element_text(size = 10),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA)
+  )
+ 
+ggplot(elo_averages_blocker, aes(x = as.numeric(interaction_n), y = elo_avg, color = player_name)) +
+  geom_line(size = 1.2, alpha = 0.8) +
+  geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
+                        name = "Player") +
+  labs(
+    title    = "Top 10 Blockers: ELO Trajectories",
+    subtitle = "Evolution of Elo rating over successive plays",
+    x        = "Observation Number",
+    y        = "Elo Rating"
+  ) +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
+    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
+    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
+    axis.title       = element_text(face = "bold", size = 14),
+    axis.text        = element_text(size = 12, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "right",
+    legend.title     = element_text(face = "bold", size = 12),
+    legend.text      = element_text(size = 10),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA)
+  )
+
+```
+
+
+```{r}
 pro_bowl = c("Aaron Donald", "Myles Garrett")
 
 pro_ol <- elo_long %>%
@@ -498,20 +567,18 @@ cat("Updating ELO MSE:", mse_updating_elo, "\n")
 
 
 ```{r}
-# --- Comparison DataFrame (Baseline vs Elo only) ---
+
 mse_df <- tibble(
   Model = factor(c("Baseline", "ELO"),
                  levels = c("Baseline", "ELO")),
   MSE   = c(mse_base, mse_elo)
 )
 
-# --- Custom colors from mako palette ---
 library(viridisLite)
 custom_cols <- mako(6)
 chosen_cols <- c(custom_cols[4], custom_cols[5])
 names(chosen_cols) <- c("Baseline", "ELO")
 
-# --- Plot ---
 ggplot(mse_df, aes(x = Model, y = MSE, fill = Model)) +
   geom_col(width = 0.6, alpha = 0.9, show.legend = FALSE) +
   geom_text(aes(label = round(MSE, 4)), vjust = -0.5, size = 5, fontface = "bold") +
@@ -536,4 +603,192 @@ ggplot(mse_df, aes(x = Model, y = MSE, fill = Model)) +
 improvement_pct <- ((mse_base - mse_elo) / mse_base) * 100
 cat("Elo reduces MSE by", round(improvement_pct, 2), "% compared to baseline.\n")
 ```
+
+```{r}
+data_1 <- results2 %>% 
+  select(-V1) %>% 
+  mutate(
+    rusher_name = factor(rusher_name),
+    blocker_name = factor(blocker_name),
+    rusher_won = factor(rusher_won)
+  ) %>% 
+  select(rusher_won, rusher_name, blocker_name, double_team)
+
+data_1 <- data_1[complete.cases(data_1), ]
+
+y <- data_1$rusher_won
+
+X <- model.matrix(rusher_won ~ rusher_name + blocker_name + double_team, data = data_1)[,-1]
+
+fit_glm <- cv.glmnet(X,y,type.measure = "deviance", alpha = 0, family = "binomial")
+
+plot(fit_glm)
+
+min_lambda <- fit_glm$lambda.min
+
+
+coef_df <- as.matrix(coef(fit_glm, s = min_lambda))
+
+coef_df <- data.frame(
+  variable = rownames(coef_df),
+  coefficient = coef_df[,1],
+  row.names = NULL
+)
+
+
+coef_df <- coef_df %>% filter(variable != "(Intercept)")
+
+
+coef_df <- coef_df %>%
+  mutate(
+    variable = str_remove(variable, "^rusher_name"),
+    variable = str_remove(variable, "^blocker_name")
+  )
+
+```
+
+```{r}
+names <- fread('../../nfl_data/Hudl IQ 2021 player roster.csv')
+results <- coef_df %>% 
+  left_join(names, by = c("variable" = "player_name"))
+
+results <- results %>% 
+  mutate(
+    Offense = ifelse(team_position_name %in% c("Offensive Lineman", "Tight End"), TRUE, FALSE),
+    Defense = ifelse(team_position_name %in% c("Defensive Lineman", "Linebacker"), TRUE, FALSE)
+  )
+
+n_interactions_rusher <- data_1 %>% 
+  group_by(rusher_name) %>% 
+  summarise(count = n()) %>%
+  ungroup()
+
+n_interactions_blocker <- data_1 %>% 
+  group_by(blocker_name) %>% 
+  summarise(count = n()) %>%
+  ungroup()
+
+qualified_rusher <- n_interactions_rusher %>% 
+  filter(count > 199) %>% 
+  pull(rusher_name)
+
+qualified_blocker <- n_interactions_blocker %>% 
+  filter(count > 199) %>% 
+  pull(blocker_name)
+
+best_blockers <- results %>% 
+  filter(Offense==T & variable %in% qualified_blocker) %>% 
+  arrange(-desc(coefficient)) %>% 
+  select(variable,coefficient,player_id) %>% 
+  unique()
+
+best_rushers <- results %>% 
+  filter(Defense==T & variable %in% qualified_rusher) %>% 
+  arrange(desc(coefficient)) %>% 
+  select(variable,coefficient,player_id) %>% 
+  unique()
+
+ggplot(best_blockers,aes(x=coefficient)) +
+  geom_histogram(color="white", fill = custom_cols[4]) +
+  labs(
+    title = "Blocker Coefficient Distribution",
+    x = "Coefficient",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text     = element_text(size = 14, color = "grey20"),
+    axis.title.x = element_text(face = "bold", size = 14), 
+    axis.title.y  = element_text(face = "bold", size = 14)
+  )
+
+ggplot(best_rushers,aes(x=coefficient)) +
+  geom_histogram(color="white", fill =custom_cols[4]) +
+  labs(
+    title = "Rusher Coefficient Distribution",
+    x = "Coefficient",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text     = element_text(size = 14, color = "grey20"),
+    axis.title.y  = element_text(face = "bold", size = 14), 
+    axis.title.x  = element_text(face = "bold", size = 14), 
+  )
+
+```
+```{r}
+#top players by ridge coeff w elo 
+top_ridge_blockers <- best_blockers %>%
+  arrange(desc(coefficient)) %>%              
+  slice_head(n = 10) %>%                      
+  bind_rows(
+    best_blockers %>%
+      arrange(coefficient) %>%               
+      slice_head(n = 10)                      
+  )
+
+top_ridge_rushers <- best_rushers %>%
+   arrange(desc(coefficient)) %>%              
+  slice_head(n = 10) %>%                      
+  bind_rows(
+    best_rushers %>%
+      arrange(coefficient) %>%               
+      slice_head(n = 10)                      
+  )
+
+#merge to get elos
+top_ridge_blockers <- top_ridge_blockers %>% 
+  left_join(elo_labeled, by = c("variable" = "player_name")) %>%
+  select(variable, coefficient, final_elo) 
+
+top_ridge_rushers <- top_ridge_rushers %>%
+  left_join(elo_labeled, by = c("variable" = "player_name")) %>%
+  select(variable, coefficient, final_elo)
+
+ggplot(top_ridge_blockers, aes(x = reorder(variable, coefficient), y = coefficient, fill = final_elo)) +
+  geom_col(alpha = 0.9) +
+  scale_fill_viridis_c(option = "mako", direction = -1) +
+  coord_flip() +
+  labs(
+    title = "Top and Bottom 10 Blockers by Ridge Coefficient",
+    x = "Blocker",
+    y = "Coefficient"
+  ) +
+  theme_minimal() +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text     = element_text(size = 14, color = "grey20"),
+    axis.title.x  = element_text(face = "bold", size = 14), 
+    axis.title.y  = element_text(face = "bold", size = 14)
+  )
+
+ggplot(top_ridge_rushers, aes(x = reorder(variable, coefficient), y = coefficient, fill = final_elo)) +
+  geom_col(alpha = 0.9) +
+  coord_flip() +
+  scale_fill_viridis_c(option = "mako", direction = -1) +
+  labs(
+    title = "Top and Bottom 10 Rushers by Ridge Coefficient",
+    x = "Rusher",
+    y = "Coefficient"
+  ) +
+  theme_minimal() +
+  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme(
+    plot.title    = element_text(face = "bold", size = 18, hjust = 0.5),
+    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    axis.text     = element_text(size = 14, color = "grey20"),
+    axis.title.x  = element_text(face = "bold", size = 14), 
+    axis.title.y  = element_text(face = "bold", size = 14)
+  )
+```
+
 
