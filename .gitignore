@@ -7,10 +7,13 @@ data/raw
 data/processed
 
 # raw figures
-figures
+figures/
 
 # finder info
 .DS_Store
+
+# literature
+literature/
 
 # tex source files
 *.tex
