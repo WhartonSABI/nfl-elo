@@ -18,7 +18,9 @@ head(results2)
 sacks <- read.csv('../data/results/sacks.csv')
 
 hits <- read.csv('../data/results/hits.csv')
+```
 
+```{r}
 results2 <- results2 %>%
   left_join(
     sacks %>% select(game_id, play_uuid, sack_player, sack),
@@ -44,11 +46,13 @@ results2 <- results2 %>%
       TRUE               ~ 0.0
     )
   )
-```
-```{r}
-sum(results2$outcome_score == 1.0) # number of sacks
-```
 
+print(nrow(results2))
+print(sum(results2$outcome_score == 1.0)) 
+print(sum(results2$outcome_score == 0.4))
+print(sum(results2$outcome_score == 0.2))
+print(sum(results2$outcome_score == 1.0) + sum(results2$outcome_score == 0.4) + sum(results2$outcome_score == 0.2))
+```
 
 Cleaning
 ```{r}
@@ -67,11 +71,6 @@ init_play_ratings <- results_cleaned %>%
   distinct(player_name, .keep_all = TRUE)
 
 elo_vec <- setNames(init_play_ratings$Player_Elo, init_play_ratings$player_name)
-```
-
-```{r}
-sum(results_cleaned$n_blockers_for_rusher == 0, na.rm = TRUE)
-sum(is.na(results_cleaned$outcome_score))
 ```
 
 
@@ -388,8 +387,11 @@ ggplot(sample_blocker, aes(x = as.numeric(interaction_n), y = elo, color = playe
     legend.background= element_rect(fill = NA)
   )
 ```
-```{r}
+```{r, fig.width=16, fig.height=6}
+#paper figs
+library(patchwork)
 library(zoo)
+library(ggsci)
 #running average
 elo_averages <- elo_top %>% 
   group_by(player_name) %>%
@@ -400,94 +402,148 @@ elo_averages <- elo_top %>%
 elo_averages_rusher <- elo_averages %>% filter(role == "Rusher")
 elo_averages_blocker <- elo_averages %>% filter(role == "Blocker")
 
-ggplot(elo_averages_rusher, aes(x = as.numeric(interaction_n), y = elo_avg, color = player_name)) +
-  geom_line(size = 1.2, alpha = 0.8) +
-  geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
-  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
-                        name = "Player") +
+p1 <- ggplot(elo_averages_rusher, aes(x = as.numeric(interaction_n), y = elo_avg, color = player_name)) +
+  geom_line(size = 1.1, alpha = 0.8) +
+  geom_point(size = 0.8, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_jco(
+                        name = "Player", guide = guide_legend(nrow = 3)) +
   labs(
-    title    = "Top 10 Rushers: ELO Trajectories",
-    subtitle = "Evolution of Elo rating over successive plays",
+    title    = "Rusher Trajectories",
     x        = "Observation Number",
     y        = "Elo Rating"
   ) +
-  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme_minimal(base_family = "Verdana", base_size = 14) +
   theme(
-    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
-    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
-    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
-    axis.title       = element_text(face = "bold", size = 14),
-    axis.text        = element_text(size = 12, color = "grey20"),
+    plot.title       = element_text(size = 22, hjust = 0.5),
+    axis.title       = element_text(size = 18),
+    axis.text        = element_text(size = 14, color = "grey20"),
     panel.grid.major = element_line(color = "grey85", size = 0.3),
     panel.grid.minor = element_blank(),
-    legend.position  = "right",
-    legend.title     = element_text(face = "bold", size = 12),
-    legend.text      = element_text(size = 10),
+    legend.position  = "bottom",
+    legend.title     = element_text(size = 14),
+    legend.text      = element_text(size = 12),
     legend.key       = element_rect(fill = NA),
     legend.background= element_rect(fill = NA)
-  )
+  ) 
+
  
-ggplot(elo_averages_blocker, aes(x = as.numeric(interaction_n), y = elo_avg, color = player_name)) +
-  geom_line(size = 1.2, alpha = 0.8) +
-  geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
-  scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
-                        name = "Player") +
+p2 <- ggplot(elo_averages_blocker, aes(x = as.numeric(interaction_n), y = elo_avg, color = player_name)) +
+  geom_line(size = 1.1, alpha = 0.8) +
+  geom_point(size = 0.8, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "magma", begin = 0.1, end = 0.9,
+                        name = "Player", guide = guide_legend(nrow = 3)) +
   labs(
-    title    = "Top 10 Blockers: ELO Trajectories",
-    subtitle = "Evolution of Elo rating over successive plays",
+    title    = "Blocker Trajectories",
     x        = "Observation Number",
     y        = "Elo Rating"
   ) +
-  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme_minimal(base_family = "Verdana", base_size = 14) +
   theme(
-    plot.title       = element_text(face = "bold", size = 20, hjust = 0.5),
-    plot.subtitle    = element_text(size = 14, hjust = 0.5, margin = margin(b = 10)),
-    plot.caption     = element_text(size = 9, hjust = 1, color = "grey50"),
-    axis.title       = element_text(face = "bold", size = 14),
-    axis.text        = element_text(size = 12, color = "grey20"),
+    plot.title       = element_text(size = 22, hjust = 0.5),
+    axis.title       = element_text(size = 18),
+    axis.text        = element_text(size = 14, color = "grey20"),
     panel.grid.major = element_line(color = "grey85", size = 0.3),
     panel.grid.minor = element_blank(),
-    legend.position  = "right",
-    legend.title     = element_text(face = "bold", size = 12),
-    legend.text      = element_text(size = 10),
+    legend.position  = "bottom",
+    legend.title     = element_text(size = 14),
+    legend.text      = element_text(size = 12),
     legend.key       = element_rect(fill = NA),
     legend.background= element_rect(fill = NA)
-  )
-
-```
-
-
-```{r}
-pro_bowl = c("Aaron Donald", "Myles Garrett")
-
-pro_ol <- elo_long %>%
-  filter( player_name %in% pro_bowl) 
-
-avg <- elo_long %>%
-  summarize(mean_elo = mean(elo, na.rm = TRUE), .groups = "drop") %>%
-  pull(mean_elo)
-
-pro_avg <- pro_ol %>%
-  summarize(pro_mean_elo = mean(elo, na.rm = TRUE), .groups = "drop") %>%
-  pull(pro_mean_elo)
-
-
+  ) 
   
-ggplot() +
-  geom_line(data = elo_top_rusher, 
-            aes(x = as.numeric(interaction_n), y = elo, group = player_name), 
-            size = 1) +
-  geom_line(data = pro_ol, 
-            aes(x = as.numeric(interaction_n), y = elo, color = player_name), 
-            size = 1) +
-  labs(
-    title = "Pro Bowl Blockers: Elo Trajectory",
-    x = "Interaction Number",
-    y = "Elo Rating",
-    color = "Pro Bowl Blocker"
-  ) +
-  theme_minimal()
+(p1 | p2) + plot_layout(widths = c(1,1.2))
+
 ```
+```{r, fig.width=17, fig.height=6} 
+#random sample paper
+r1 <- ggplot(sample_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
+  geom_line(size = 1.1, alpha = 0.8) +
+  geom_point(size = 0.8, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "magma", begin = 0.1, end = 0.9,
+                        name = "Player", guide = guide_legend(nrow = 3)) +
+  labs(
+    title    = "Rusher Trajectories",
+    x        = "Observation Number",
+    y        = "Elo Rating"
+  ) +
+  theme_minimal(base_family = "Verdana", base_size = 14) +
+  theme(
+    plot.title       = element_text(size = 22, hjust = 0.5),
+    axis.title       = element_text(size = 18),
+    axis.text        = element_text(size = 14, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "bottom",
+    legend.title     = element_text(size = 14),
+    legend.text      = element_text(size = 12),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA),
+    plot.margin = margin(10, 20, 10, 20)
+  ) 
+
+ 
+r2 <- ggplot(sample_blocker, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
+  geom_line(size = 1.1, alpha = 0.8) +
+  geom_point(size = 0.8, shape = 21, fill = "white", stroke = 0.6) +
+  scale_color_viridis_d(option = "magma", begin = 0.1, end = 0.9,
+                        name = "Player", guide = guide_legend(nrow = 3)) +
+  labs(
+    title    = "Blocker Trajectories",
+    x        = "Observation Number",
+    y        = "Elo Rating"
+  ) +
+  theme_minimal(base_family = "Verdana", base_size = 14) +
+  theme(
+    plot.title       = element_text(size = 22, hjust = 0.5),
+    axis.title       = element_text(size = 18),
+    axis.text        = element_text(size = 14, color = "grey20"),
+    panel.grid.major = element_line(color = "grey85", size = 0.3),
+    panel.grid.minor = element_blank(),
+    legend.position  = "bottom",
+    legend.title     = element_text(size = 14),
+    legend.text      = element_text(size = 12),
+    legend.key       = element_rect(fill = NA),
+    legend.background= element_rect(fill = NA),
+    plot.margin = margin(10, 20, 10, 20)
+  ) 
+  
+(r1 | r2) + plot_layout(widths = c(1,1.25))
+
+```
+```{r, fig.width=12, fig.height=6}
+#elo rating distribution 
+final_rushers <- elo_labeled %>%
+  filter(role == "Rusher") 
+final_blockers <- elo_labeled %>% 
+  filter(role == "Blocker")
+
+e1 <- ggplot(final_rushers, aes(x = final_elo, fill = role)) +
+  geom_histogram(position = "identity", alpha = 0.8, bins = 30) +
+  labs(
+    x = "Final Elo Rating",
+    y = "Count",
+    fill = "Role"
+  ) +
+  scale_fill_manual(values = c("Rusher" = "lightblue4", "Blocker" = "lightcoral")) +
+  theme_gray(base_family = "Verdana", base_size = 18)
+
+e2 <- ggplot(final_blockers, aes(x = final_elo, fill = role)) +
+  geom_histogram(position = "identity", alpha = 0.8, bins = 30) +
+  labs(
+    x = "Final Elo Rating",
+    y = "Count",
+    fill = "Role"
+  ) +
+  scale_fill_manual(values = c("Rusher" = "lightblue4", "Blocker" = "lightcoral"), name = NULL) +
+  theme_gray(base_family = "Verdana", base_size = 18)
+
+(e1 + e2) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "right", 
+        legend.box.background = element_rect(color = "black", linewidth = 0.5),
+        legend.box.margin = margin(5,5,5,5))
+```
+
 
 ```{r}
 k_plot_df <- tibble(
@@ -561,8 +617,6 @@ mse_updating_elo <- mean((test_df$updating_pred - test_df$outcome_score)^2, na.r
 cat("Baseline MSE:", mse_base, "\n")
 cat("ELO MSE:", mse_elo, "\n")
 cat("Updating ELO MSE:", mse_updating_elo, "\n")
-
-
 ```
 
 
@@ -647,7 +701,7 @@ coef_df <- coef_df %>%
 
 ```
 
-```{r}
+```{r, fig.width=16, fig.height=6}
 names <- fread('../../nfl_data/Hudl IQ 2021 player roster.csv')
 results <- coef_df %>% 
   left_join(names, by = c("variable" = "player_name"))
@@ -688,59 +742,58 @@ best_rushers <- results %>%
   select(variable,coefficient,player_id) %>% 
   unique()
 
-ggplot(best_blockers,aes(x=coefficient)) +
-  geom_histogram(color="white", fill = custom_cols[4]) +
+d1 <- ggplot(best_blockers,aes(x=coefficient)) +
+  geom_histogram(color="white", fill = "lightblue4") +
   labs(
-    title = "Blocker Coefficient Distribution",
+    #title = "Blocker Coefficient Distribution",
     x = "Coefficient",
-    y = "Count"
+    y = "Blocker Count"
   ) +
   theme_minimal() +
-  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme_minimal(base_family = "Verdana", base_size = 14) +
   theme(
-    plot.title    = element_text(face = "bold", size = 18, hjust = 0.5),
-    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    plot.title    = element_text(size = 22, hjust = 0.5),
+    #plot.subtitle = element_text(size = 18, hjust = 0.5),
     axis.text     = element_text(size = 14, color = "grey20"),
-    axis.title.x = element_text(face = "bold", size = 14), 
-    axis.title.y  = element_text(face = "bold", size = 14)
+    axis.title.x = element_text(size = 18), 
+    axis.title.y  = element_text(size = 18)
   )
 
-ggplot(best_rushers,aes(x=coefficient)) +
-  geom_histogram(color="white", fill =custom_cols[4]) +
+d2 <- ggplot(best_rushers,aes(x=coefficient)) +
+  geom_histogram(color="white", fill = "lightblue4") +
   labs(
-    title = "Rusher Coefficient Distribution",
+    #title = "Rusher Coefficient Distribution",
     x = "Coefficient",
-    y = "Count"
+    y = "Rusher Count"
   ) +
   theme_minimal() +
-  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme_minimal(base_family = "Verdana", base_size = 14) +
   theme(
-    plot.title    = element_text(face = "bold", size = 18, hjust = 0.5),
-    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    plot.title    = element_text(size = 22, hjust = 0.5),
+    #plot.subtitle = element_text(size = 14, hjust = 0.5),
     axis.text     = element_text(size = 14, color = "grey20"),
-    axis.title.y  = element_text(face = "bold", size = 14), 
-    axis.title.x  = element_text(face = "bold", size = 14), 
+    axis.title.y  = element_text(size = 18), 
+    axis.title.x  = element_text(size = 18), 
   )
 
+d1 + d2
 ```
-```{r}
+
+```{r, fig.width = 16, fig.height = 6}
 #top players by ridge coeff w elo 
-top_ridge_blockers <- best_blockers %>%
-  arrange(desc(coefficient)) %>%              
-  slice_head(n = 10) %>%                      
-  bind_rows(
-    best_blockers %>%
-      arrange(coefficient) %>%               
-      slice_head(n = 10)                      
-  )
+top_ridge_blockers <- bind_rows(
+  slice_min(best_blockers, coefficient, n = 5),
+  slice_max(best_blockers, coefficient, n = 5)
+) %>%
+  arrange((coefficient))
 
 top_ridge_rushers <- best_rushers %>%
-   arrange(desc(coefficient)) %>%              
-  slice_head(n = 10) %>%                      
+  arrange(desc(coefficient)) %>%              
+  slice_head(n = 5) %>%                      
   bind_rows(
     best_rushers %>%
       arrange(coefficient) %>%               
-      slice_head(n = 10)                      
+      slice_head(n = 5)                      
   )
 
 #merge to get elos
@@ -752,43 +805,115 @@ top_ridge_rushers <- top_ridge_rushers %>%
   left_join(elo_labeled, by = c("variable" = "player_name")) %>%
   select(variable, coefficient, final_elo)
 
-ggplot(top_ridge_blockers, aes(x = reorder(variable, coefficient), y = coefficient, fill = final_elo)) +
+t1 <- ggplot(top_ridge_blockers, aes(x = reorder(variable, coefficient), y = coefficient, fill = final_elo)) +
   geom_col(alpha = 0.9) +
-  scale_fill_viridis_c(option = "mako", direction = -1) +
+  scale_fill_viridis_c(option = "magma", direction = -1) +
   coord_flip() +
   labs(
-    title = "Top and Bottom 10 Blockers by Ridge Coefficient",
-    x = "Blocker",
+    title = "Blockers",
+    x = NULL,
     y = "Coefficient"
   ) +
   theme_minimal() +
-  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme_minimal(base_family = "Verdana", base_size = 14) +
   theme(
-    plot.title    = element_text(face = "bold", size = 18, hjust = 0.5),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    plot.title    = element_text(size = 22, hjust = 0.5),
     plot.subtitle = element_text(size = 14, hjust = 0.5),
     axis.text     = element_text(size = 14, color = "grey20"),
-    axis.title.x  = element_text(face = "bold", size = 14), 
-    axis.title.y  = element_text(face = "bold", size = 14)
+    axis.title.x  = element_text(size = 18), 
+    axis.title.y  = element_text(size = 18)
   )
 
-ggplot(top_ridge_rushers, aes(x = reorder(variable, coefficient), y = coefficient, fill = final_elo)) +
+t2 <- ggplot(top_ridge_rushers, aes(x = reorder(variable, coefficient), y = coefficient, fill = final_elo)) +
   geom_col(alpha = 0.9) +
   coord_flip() +
-  scale_fill_viridis_c(option = "mako", direction = -1) +
+  scale_fill_viridis_c(option = "magma", direction = -1) +
   labs(
-    title = "Top and Bottom 10 Rushers by Ridge Coefficient",
-    x = "Rusher",
+    title = "Rushers",
+    x = NULL,
     y = "Coefficient"
   ) +
   theme_minimal() +
-  theme_minimal(base_family = "Helvetica", base_size = 14) +
+  theme_minimal(base_family = "Verdana", base_size = 14) +
   theme(
-    plot.title    = element_text(face = "bold", size = 18, hjust = 0.5),
-    plot.subtitle = element_text(size = 14, hjust = 0.5),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    plot.title    = element_text(size = 22, hjust = 0.5),
+    plot.subtitle = element_text(size = 18, hjust = 0.5),
     axis.text     = element_text(size = 14, color = "grey20"),
-    axis.title.x  = element_text(face = "bold", size = 14), 
-    axis.title.y  = element_text(face = "bold", size = 14)
+    axis.title.x  = element_text(size = 18), 
+    axis.title.y  = element_text(size = 18)
+  )
+
+(t1 | t2) +
+  plot_annotation(
+    theme = theme(
+      plot.background = element_rect(color = "black", fill = NA, linewidth = 1)
+    )
   )
 ```
 
+```{r, fig.width = 12, fig.height = 6}
+ridge_elo_df <- results %>%
+  left_join(elo_labeled, by = c("variable" = "player_name")) %>%
+  select(variable, coefficient, final_elo, role)
+
+rusher_ridge_elo <- ridge_elo_df %>% filter(role == "Rusher")
+blocker_ridge_elo <- ridge_elo_df %>% filter(role == "Blocker")
+ridge_elo_df <- ridge_elo_df %>% 
+  filter(!is.na(role))
+
+r2_val <- ridge_elo_df %>% 
+  group_by(role) %>% 
+  summarize(r2 = cor(final_elo, coefficient)^2) 
+
+ggplot(ridge_elo_df, aes(coefficient, final_elo, color = role)) +
+  geom_point(alpha = 0.7, size = 3) +
+  geom_smooth(method = "lm", se = FALSE, color = 'black') +
+  facet_wrap(~role, scales = "free_y") +
+  scale_color_manual(values = c("Rusher" = "lightblue4", "Blocker" = "lightcoral")) +
+  labs(
+    x = "Ridge Coefficient",
+    y = "Final Elo Rating"
+  ) +
+  theme_minimal(base_family = "Verdana", base_size = 18) + 
+  theme(
+    strip.text = element_text(size = 18),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    legend.position = "right",
+    legend.box.background = element_rect(color = "black", linewidth = 0.5),
+    legend.box.margin = margin(5,5,5,5))
+    
+```
+```{r}
+#accolade validation
+all_pro_df = tibble(
+  player_name = c("Trent Williams", "Tristan Wirfs", "Joel Bitonio", "Zack Martin", "Jason Kelce", "T.J. Watt", 
+                  "Myles Garrett", "Aaron Donald", "Cameron Heyward", "Micah Parsons", "Darius Leonard", "De'Vondre Campbell" 
+                  ,"Rashawn Slater", "Lane Johnson", "Quenton Nelson", "Wyatt Teller", "Corey Linsley", "Robert Quinn",
+                  "Maxx Crosby", "Chris Jones", "Jeffery Simmons", "Demario Davis", "Roquan Smith", "Bobby Wagner"),
+  all_pro = c("First Team", "First Team", "First Team", "First Team", "First Team", "First Team", 
+               "First Team", "First Team", "First Team", "First Team", "First Team", "First Team", 
+               "Second Team", "Second Team", "Second Team", "Second Team", "Second Team", "Second Team",
+               "Second Team", "Second Team", "Second Team", "Second Team", "Second Team", "Second Team")
+  )
+
+all_pro_df <- all_pro_df %>%
+  left_join(ridge_elo_df, by = c("player_name" = "variable")) %>% 
+  distinct(player_name, .keep_all = TRUE) %>% 
+  filter(all_pro == "First Team") %>% 
+  select(player_name, coefficient, final_elo, role) %>%
+  rename(Ridge = coefficient, Player = player_name, Elo = final_elo, Position = role)
+
+all_pro_df
+```
+
+```{r}
+library(kableExtra)
+
+cat(
+  kable(all_pro_df, format = "latex", booktabs = TRUE) %>%
+  kable_styling(latex_options = c("hold_position", "striped")),
+  file = "all_pro_table.tex")
+```
 

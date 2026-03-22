@@ -13,41 +13,24 @@ pacman::p_load(tidyverse, dplyr, ggthemes, data.table, lubridate, glmnet,
 
 
 ```{r}
-results2 = fread('../data/results/results2.csv')
-head(results2)
-# sacks <- read.csv('../data/results/sacks.csv')
-# 
-# hits <- read.csv('../data/results/hits.csv')
-# 
-# results2 <- results2 %>%
-#   left_join(
-#     sacks %>% select(game_id, play_uuid, sack_player, sack),
-#     by = c("game_id", "play_id" = "play_uuid", "rusher_name" = "sack_player")
-#   ) %>%
-#   mutate(sack = replace_na(sack, 0L)) 
-# 
-# 
-# results2 <- results2 %>%
-#   left_join(
-#     hits %>% select(game_id, play_uuid, hit_player, hit),
-#     by = c("game_id", "play_id" = "play_uuid", "rusher_name" = "hit_player")
-#   ) %>%
-#   mutate(hit = replace_na(hit, 0L))
-#   
-# 
-results2 <- results2 %>%
+results1 = fread('../data/results/results2.csv')
+
+results1 <- results1 %>%
   mutate(
     outcome_score = case_when(
       rusher_won == 1L   ~ 1.0,
       TRUE               ~ 0.0
     )
   )
+
+sum(results1$outcome_score==1.0)
+nrow(results1)
 ```
 
 
 Cleaning
 ```{r}
-results_cleaned <- results2 %>% 
+results_cleaned_1 <- results1 %>% 
   drop_na(game_id, rusher_name, blocker_name) %>% 
   arrange(game_id, play_id, event_game_index) %>% 
   select(-rusher_won)
@@ -55,13 +38,13 @@ results_cleaned <- results2 %>%
 #results_cleaned <- results_cleaned %>%
   #left_join(outcome_summary, by = c("game_id", "play_id", "rusher_name"))
 
-init_play_ratings <- results_cleaned %>%
+init_play_ratings_1 <- results_cleaned_1 %>%
   select(rusher_name, blocker_name) %>%
   pivot_longer(everything(), names_to = "type", values_to = "player_name") %>%
   mutate(Player_Elo = ifelse(type == "rusher_name", 750, 1125)) %>%  
   distinct(player_name, .keep_all = TRUE)
 
-elo_vec <- setNames(init_play_ratings$Player_Elo, init_play_ratings$player_name)
+elo_vec_1 <- setNames(init_play_ratings_1$Player_Elo, init_play_ratings_1$player_name)
 ```
 
 Elo function
@@ -102,16 +85,16 @@ elo_step <- function(
 
 get_elo <- function(id) {
   id <- as.character(id)  
-  if (!id %in% names(elo_vec)) elo_vec[[id]] <- 1000
-  return(elo_vec[[id]])
+  if (!id %in% names(elo_vec_1)) elo_vec_1[[id]] <- 1000
+  return(elo_vec_1[[id]])
 } 
 
 ```
 
 ```{r}
-results_cleaned <- as.data.table(results_cleaned)
+results_cleaned_1 <- as.data.table(results_cleaned_1)
 
-results_cleaned <- results_cleaned %>%
+results_cleaned_1 <- results_cleaned_1 %>%
   group_by(rusher_name) %>%
   mutate(rusher_row = row_number()) %>%
   ungroup() %>%
@@ -120,7 +103,7 @@ results_cleaned <- results_cleaned %>%
   ungroup()
 
 #compute k for rusher and blocker
-results_cleaned <- results_cleaned %>%
+results_cleaned_1 <- results_cleaned_1 %>%
   mutate(
     rusher_k = adaptive_K_prov(n = rusher_row, K_start = 20, K_min = 10, n_prov = 87, n_decay = 200),
     blocker_k = adaptive_K_prov(blocker_row, K_start = 20, K_min = 10, n_prov = 87, n_decay = 200)
@@ -130,10 +113,10 @@ results_cleaned <- results_cleaned %>%
 
 ```{r}
 
-interaction_counts <- list()  # Initialize interaction count
-elo_vec <- setNames(init_play_ratings$Player_Elo, init_play_ratings$player_name)
+interaction_counts_1 <- list()  # Initialize interaction count
+elo_vec_1 <- setNames(init_play_ratings_1$Player_Elo, init_play_ratings_1$player_name)
 
-elo_history <- results_cleaned %>%
+elo_history_1 <- results_cleaned_1 %>%
   mutate(
     before_rusher_elo = NA_real_,
     before_blocker_elo = NA_real_,
@@ -143,31 +126,31 @@ elo_history <- results_cleaned %>%
     blocker_n          = blocker_row
   )
 
-for (i in seq_len(nrow(results_cleaned))) {
-  r_id <- results_cleaned$rusher_name[i]
-  b_id <- results_cleaned$blocker_name[i]
-  out  <- results_cleaned$outcome_score[i]
-  r_K  <- results_cleaned$rusher_k[i]
-  b_K  <- results_cleaned$blocker_k[i]
-  d_t <- results_cleaned$double_team[i]
+for (i in seq_len(nrow(results_cleaned_1))) {
+  r_id <- results_cleaned_1$rusher_name[i]
+  b_id <- results_cleaned_1$blocker_name[i]
+  out  <- results_cleaned_1$outcome_score[i]
+  r_K  <- results_cleaned_1$rusher_k[i]
+  b_K  <- results_cleaned_1$blocker_k[i]
+  d_t <- results_cleaned_1$double_team[i]
 
   if (is.na(r_id) || is.na(b_id) || is.na(out)) next
 
   r_elo <- get_elo(r_id)
   b_elo <- get_elo(b_id)
 
-  elo_history$before_rusher_elo[i]  <- r_elo
-  elo_history$before_blocker_elo[i] <- b_elo
+  elo_history_1$before_rusher_elo[i]  <- r_elo
+  elo_history_1$before_blocker_elo[i] <- b_elo
 
   new <- elo_step(b_elo, r_elo, outcome_score = out, blocker_K = b_K, rusher_K = r_K, double_team = d_t)
 
   if (!any(is.na(new))) {
-  elo_vec[[r_id]] <- new["r"]
-  elo_vec[[b_id]] <- new["b"]
+  elo_vec_1[[r_id]] <- new["r"]
+  elo_vec_1[[b_id]] <- new["b"]
 }
 
-  elo_history$after_rusher_elo[i]  <- new["r"]
-  elo_history$after_blocker_elo[i] <- new["b"]
+  elo_history_1$after_rusher_elo[i]  <- new["r"]
+  elo_history_1$after_blocker_elo[i] <- new["b"]
 }
 
 ```
@@ -176,40 +159,40 @@ for (i in seq_len(nrow(results_cleaned))) {
 
 ```{r}
 # memory cleanup: remove initial ratings after vector creation
-rm(init_play_ratings)
+rm(init_play_ratings_1)
 gc()
 ```
 
 
 ```{r}
 #get results
-elo_df <- enframe(elo_vec, name = "player_name", value = "final_elo")
+elo_df_1 <- enframe(elo_vec_1, name = "player_name", value = "final_elo")
 
 #differentiate between rushers and blockers
-player_roles <- results_cleaned %>%
+player_roles_1 <- results_cleaned_1 %>%
   select(rusher_name, blocker_name) %>%
   pivot_longer(cols = everything(), values_to = "player_name") %>%
   mutate(role = ifelse(name == "rusher_name", "Rusher", "Blocker")) %>%
   distinct(player_name, role)
 
 #join to get elo with annotated rusher/blocker label
-elo_labeled <- elo_df %>%
-  left_join(player_roles, by = "player_name") %>%
+elo_labeled_1 <- elo_df_1 %>%
+  left_join(player_roles_1, by = "player_name") %>%
   filter(!is.na(role))
 
 #get top 10
-top_rushers <- elo_labeled %>%
+top_rushers_1 <- elo_labeled_1 %>%
   filter(role == "Rusher") %>%
   slice_max(final_elo, n = 12)
 
-top_blockers <- elo_labeled %>%
+top_blockers_1 <- elo_labeled_1 %>%
   filter(role == "Blocker") %>%
   slice_max(final_elo, n = 12)
 ```
 
 ```{r}
 #pivot to get elo updates per play 
-elo_long <- elo_history %>%
+elo_long_1 <- elo_history_1 %>%
   select(game_id, play_id,
          rusher_name, blocker_name,
          after_rusher_elo, after_blocker_elo,
@@ -227,28 +210,28 @@ elo_long <- elo_history %>%
   select(play_id, game_id, player_name, role, interaction_n, elo) %>%
   filter(!is.na(elo))
 
-final_elos <- elo_long %>%
+final_elos_1 <- elo_long_1 %>%
   group_by(player_name, role) %>%
   filter(interaction_n == max(interaction_n, na.rm = TRUE)) %>%
   ungroup()
 
 # Select top 10 per role based on final Elo
-top_players <- final_elos %>%
+top_players_1 <- final_elos_1 %>%
   group_by(role) %>%
   filter(interaction_n > 200) %>% 
   slice_max(elo, n = 10) %>%
   pull(player_name)
 
-elo_top <- elo_long %>%
-  filter(player_name %in% top_players)
+elo_top_1 <- elo_long_1 %>%
+  filter(player_name %in% top_players_1)
 ```
 
 
 ```{r}
-elo_top_rusher <- elo_top %>% filter(role == "Rusher")
-elo_top_blocker <- elo_top %>% filter(role == "Blocker")
+elo_top_rusher_1 <- elo_top_1 %>% filter(role == "Rusher")
+elo_top_blocker_1 <- elo_top_1 %>% filter(role == "Blocker")
 
-ggplot(elo_top_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
+ggplot(elo_top_rusher_1, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
   scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
@@ -275,7 +258,7 @@ ggplot(elo_top_rusher, aes(x = as.numeric(interaction_n), y = elo, color = playe
     legend.background= element_rect(fill = NA)
   )
  
-ggplot(elo_top_blocker, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
+ggplot(elo_top_blocker_1, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
   scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
@@ -303,13 +286,13 @@ ggplot(elo_top_blocker, aes(x = as.numeric(interaction_n), y = elo, color = play
   )
 
 # Save results to processed data
-write_csv(elo_history, "../data/results/elo_history.csv")
-write_csv(elo_labeled, "../data/results/player_elo_ratings.csv")
+write_csv(elo_history_1, "../data/results/elo_history_1.csv")
+write_csv(elo_labeled_1, "../data/results/player_elo_ratings_1.csv")
 ```
 Auxillary plots for presentation
 ```{r}
 set.seed(6)
-sample <- elo_long %>%
+sample <- elo_long_1 %>%
   filter(interaction_n > 100) %>% 
   group_by(player_name, role) %>%
   summarize(final_elo = max(elo, na.rm = TRUE), .groups = "drop") %>%
@@ -317,13 +300,13 @@ sample <- elo_long %>%
   slice_sample(n = 10) %>%
   pull(player_name)
 
-sample_rusher <- elo_long %>%
+sample_rusher_1 <- elo_long_1 %>%
   filter(player_name %in% sample, role == "Rusher")
 
-sample_blocker <- elo_long %>%
+sample_blocker_1 <- elo_long_1 %>%
   filter(player_name %in% sample, role == "Blocker")
 
-ggplot(sample_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
+ggplot(sample_rusher_1, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
   scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
@@ -350,7 +333,7 @@ ggplot(sample_rusher, aes(x = as.numeric(interaction_n), y = elo, color = player
     legend.background= element_rect(fill = NA)
   )
 
-ggplot(sample_blocker, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
+ggplot(sample_blocker_1, aes(x = as.numeric(interaction_n), y = elo, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
   scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
@@ -380,16 +363,16 @@ ggplot(sample_blocker, aes(x = as.numeric(interaction_n), y = elo, color = playe
 ```{r}
 library(zoo)
 #running average
-elo_averages <- elo_top %>% 
+elo_averages_1 <- elo_top_1 %>% 
   group_by(player_name) %>%
   arrange(interaction_n) %>%
   mutate(elo_avg = rollapply(elo, width = 20, FUN = mean, align = "right", partial = TRUE)) %>%
   ungroup()
 
-elo_averages_rusher <- elo_averages %>% filter(role == "Rusher")
-elo_averages_blocker <- elo_averages %>% filter(role == "Blocker")
+elo_averages_rusher_1 <- elo_averages_1 %>% filter(role == "Rusher")
+elo_averages_blocker_1 <- elo_averages_1 %>% filter(role == "Blocker")
 
-ggplot(elo_averages_rusher, aes(x = as.numeric(interaction_n), y = elo_avg, color = player_name)) +
+ggplot(elo_averages_rusher_1, aes(x = as.numeric(interaction_n), y = elo_avg, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
   scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
@@ -416,7 +399,7 @@ ggplot(elo_averages_rusher, aes(x = as.numeric(interaction_n), y = elo_avg, colo
     legend.background= element_rect(fill = NA)
   )
  
-ggplot(elo_averages_blocker, aes(x = as.numeric(interaction_n), y = elo_avg, color = player_name)) +
+ggplot(elo_averages_blocker_1, aes(x = as.numeric(interaction_n), y = elo_avg, color = player_name)) +
   geom_line(size = 1.2, alpha = 0.8) +
   geom_point(size = 1, shape = 21, fill = "white", stroke = 0.6) +
   scale_color_viridis_d(option = "mako", begin = 0.1, end = 0.9,
@@ -446,110 +429,53 @@ ggplot(elo_averages_blocker, aes(x = as.numeric(interaction_n), y = elo_avg, col
 ```
 
 
-```{r}
-pro_bowl = c("Aaron Donald", "Myles Garrett")
-
-pro_ol <- elo_long %>%
-  filter( player_name %in% pro_bowl) 
-
-avg <- elo_long %>%
-  summarize(mean_elo = mean(elo, na.rm = TRUE), .groups = "drop") %>%
-  pull(mean_elo)
-
-pro_avg <- pro_ol %>%
-  summarize(pro_mean_elo = mean(elo, na.rm = TRUE), .groups = "drop") %>%
-  pull(pro_mean_elo)
-
-
-  
-ggplot() +
-  geom_line(data = elo_top_rusher, 
-            aes(x = as.numeric(interaction_n), y = elo, group = player_name), 
-            size = 1) +
-  geom_line(data = pro_ol, 
-            aes(x = as.numeric(interaction_n), y = elo, color = player_name), 
-            size = 1) +
-  labs(
-    title = "Pro Bowl Blockers: Elo Trajectory",
-    x = "Interaction Number",
-    y = "Elo Rating",
-    color = "Pro Bowl Blocker"
-  ) +
-  theme_minimal()
-```
-
-```{r}
-k_plot_df <- tibble(
-  n = 1:300,
-  K = adaptive_K_prov(n, K_start = 20, K_min = 10, n_prov = 87, n_decay = 200)
-)
-
-# Plot
-ggplot(k_plot_df, aes(x = n, y = K)) +
-  geom_line(color = "aquamarine4", size = 1.5) +
-  geom_vline(xintercept = c(87, 200), linetype = "dashed", color = "slategrey") +
-  labs(
-    title = "Adaptive Learning Rate Schedule",
-    x = "Number of Interactions (n)",
-    y = "Learning Rate (K)"
-  ) +
-  theme_minimal() +
-  theme(
-    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
-    axis.title = element_text(face = "bold", size = 14),
-    axis.text = element_text(size = 12),
-    panel.grid.major = element_line(color = "grey85", size = 0.3),
-    panel.grid.minor = element_blank()
-  )
-```
-
 Log loss validation
 ```{r}
-n_total <- nrow(elo_history)
+n_total <- nrow(elo_history_1)
 n_train <- floor(0.8 * n_total)
 
-train_df <- elo_history[1:n_train, ]
-test_df  <- elo_history[(n_train + 1):n_total, ]
+train_df_1 <- elo_history_1[1:n_train, ]
+test_df_1  <- elo_history_1[(n_train + 1):n_total, ]
 
-final_rusher_elo <- train_df %>%
+final_rusher_elo_1 <- train_df_1 %>%
   group_by(rusher_name) %>%
   slice_tail(n = 1) %>%
   select(rusher_name, after_rusher_elo) %>%
   rename(rusher_elo_pred = after_rusher_elo)
 
-final_blocker_elo <- train_df %>%
+final_blocker_elo_1 <- train_df_1 %>%
   group_by(blocker_name) %>%
   slice_tail(n = 1) %>%
   select(blocker_name, after_blocker_elo) %>%
   rename(blocker_elo_pred = after_blocker_elo)
 
-test_df <- test_df %>%
-  left_join(final_rusher_elo, by = "rusher_name") %>%
-  left_join(final_blocker_elo, by = "blocker_name")
+test_df_1 <- test_df_1 %>%
+  left_join(final_rusher_elo_1, by = "rusher_name") %>%
+  left_join(final_blocker_elo_1, by = "blocker_name")
 
-baseline_mean <- mean(train_df$outcome_score != 0, na.rm = TRUE)
-test_df$baseline_pred <- baseline_mean
+baseline_mean_1 <- mean(train_df_1$outcome_score != 0, na.rm = TRUE)
+test_df_1$baseline_pred <- baseline_mean_1
 
 scale <- 319
-test_df$blocker_bonus <- ifelse(test_df$double_team == 1, 100, 0)
-test_df$adj_belo <- test_df$blocker_elo_pred + test_df$blocker_bonus
+test_df_1$blocker_bonus <- ifelse(test_df_1$double_team == 1, 100, 0)
+test_df_1$adj_belo <- test_df_1$blocker_elo_pred + test_df_1$blocker_bonus
 
-test_df$rusher_win_prob <- 1 / (1 + 10^((test_df$adj_belo - test_df$rusher_elo_pred) / scale))
+test_df_1$rusher_win_prob <- 1 / (1 + 10^((test_df_1$adj_belo - test_df_1$rusher_elo_pred) / scale))
 
 
-test_df$blocker_bonus <- ifelse(test_df$double_team == 1, 100, 0)
-test_df$adj_belo <- test_df$before_blocker_elo + test_df$blocker_bonus
+test_df_1$blocker_bonus <- ifelse(test_df_1$double_team == 1, 100, 0)
+test_df_1$adj_belo <- test_df_1$before_blocker_elo + test_df_1$blocker_bonus
 
-test_df$updating_pred <- 1 / (1 + 10^((test_df$adj_belo - test_df$before_rusher_elo) / scale))
+test_df_1$updating_pred <- 1 / (1 + 10^((test_df_1$adj_belo - test_df_1$before_rusher_elo) / scale))
 
 # --- Compute MSE ---
-mse_base         <- mean((test_df$baseline_pred - test_df$outcome_score)^2, na.rm = TRUE)
-mse_elo          <- mean((test_df$rusher_win_prob - test_df$outcome_score)^2, na.rm = TRUE)
-mse_updating_elo <- mean((test_df$updating_pred - test_df$outcome_score)^2, na.rm = TRUE)
+mse_base_1         <- mean((test_df_1$baseline_pred - test_df_1$outcome_score)^2, na.rm = TRUE)
+mse_elo_1          <- mean((test_df_1$rusher_win_prob - test_df_1$outcome_score)^2, na.rm = TRUE)
+mse_updating_elo_1 <- mean((test_df_1$updating_pred - test_df_1$outcome_score)^2, na.rm = TRUE)
 
-cat("Baseline MSE:", mse_base, "\n")
-cat("ELO MSE:", mse_elo, "\n")
-cat("Updating ELO MSE:", mse_updating_elo, "\n")
+cat("Baseline MSE:", mse_base_1, "\n")
+cat("ELO MSE:", mse_elo_1, "\n")
+cat("Updating ELO MSE:", mse_updating_elo_1, "\n")
 
 
 ```
