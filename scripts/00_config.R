@@ -106,6 +106,7 @@ UNCERTAINTY_SEED <- get_env_int("PIPELINE_SEED", 20260328L)
 VALIDATION_BOOTSTRAP_ITER <- get_env_int("VALIDATION_BOOTSTRAP_ITER", 400L)
 RATING_BOOTSTRAP_ITER <- get_env_int("RATING_BOOTSTRAP_ITER", 80L)
 END_TO_END_BOOTSTRAP_ITER <- get_env_int("END_TO_END_BOOTSTRAP_ITER", VALIDATION_BOOTSTRAP_ITER)
+PATH_BOOTSTRAP_ITER <- get_env_int("PATH_BOOTSTRAP_ITER", 0L)
 WIN_BASELINE_PRIOR_STRENGTH <- get_env_num("WIN_BASELINE_PRIOR_STRENGTH", 25)
 WIN_BASELINE_MATCHUP_METHOD <- tolower(Sys.getenv("WIN_BASELINE_MATCHUP_METHOD", unset = "logit_mean"))
 
@@ -136,6 +137,7 @@ PIPELINE_CONFIG <- list(
     win_bt_validation_metrics = file.path(WIN_OUTPUT_DIR, "validation_metrics_win_bt_ridge.csv"),
     win_bt_validation_uncertainty = file.path(WIN_OUTPUT_DIR, "validation_uncertainty_win_bt_ridge.csv"),
     win_bt_rating_uncertainty = file.path(WIN_OUTPUT_DIR, "rating_uncertainty_win_bt_ridge.csv"),
+    win_bt_weekly_path_uncertainty = file.path(WIN_OUTPUT_DIR, "path_uncertainty_weekly_win_bt_ridge.csv"),
     severity_model_artifact = file.path(SEVERITY_OUTPUT_DIR, "model_severity_bt_ridge.rds"),
     severity_model_diagnostics = file.path(SEVERITY_OUTPUT_DIR, "model_diagnostics_severity_bt_ridge.csv"),
     severity_model_coefficients = file.path(SEVERITY_OUTPUT_DIR, "model_coefficients_severity_bt_ridge.csv"),
@@ -144,7 +146,8 @@ PIPELINE_CONFIG <- list(
     severity_bt_validation_metrics = file.path(SEVERITY_OUTPUT_DIR, "validation_metrics_severity_bt_ridge.csv"),
     severity_bt_multiclass_metrics = file.path(SEVERITY_OUTPUT_DIR, "validation_metrics_severity_multiclass_bt_ridge.csv"),
     severity_bt_validation_uncertainty = file.path(SEVERITY_OUTPUT_DIR, "validation_uncertainty_severity_bt_ridge.csv"),
-    severity_bt_rating_uncertainty = file.path(SEVERITY_OUTPUT_DIR, "rating_uncertainty_severity_bt_ridge.csv")
+    severity_bt_rating_uncertainty = file.path(SEVERITY_OUTPUT_DIR, "rating_uncertainty_severity_bt_ridge.csv"),
+    severity_bt_weekly_path_uncertainty = file.path(SEVERITY_OUTPUT_DIR, "path_uncertainty_weekly_severity_bt_ridge.csv")
   ),
   win_definition = list(
     max_win_seconds = as.numeric(Sys.getenv("WIN_SECONDS_THRESHOLD", unset = "2.5"))
@@ -162,7 +165,8 @@ PIPELINE_CONFIG <- list(
     seed = UNCERTAINTY_SEED,
     validation_bootstrap_iterations = VALIDATION_BOOTSTRAP_ITER,
     rating_bootstrap_iterations = RATING_BOOTSTRAP_ITER,
-    end_to_end_bootstrap_iterations = END_TO_END_BOOTSTRAP_ITER
+    end_to_end_bootstrap_iterations = END_TO_END_BOOTSTRAP_ITER,
+    path_bootstrap_iterations = PATH_BOOTSTRAP_ITER
   ),
   parallel = list(
     reserve_cores = PARALLEL_RESERVED_CORES,

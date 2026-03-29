@@ -83,3 +83,33 @@ write_output_csv(rating_uncertainty, PIPELINE_CONFIG$output_paths$severity_bt_ra
 
 message("Wrote severity validation uncertainty: ", PIPELINE_CONFIG$output_paths$severity_bt_validation_uncertainty)
 message("Wrote severity rating uncertainty: ", PIPELINE_CONFIG$output_paths$severity_bt_rating_uncertainty)
+
+path_boot_iter <- as.integer(PIPELINE_CONFIG$uncertainty$path_bootstrap_iterations)
+if (path_boot_iter > 0L) {
+  message(
+    "Running weekly cumulative severity path uncertainty (bootstrap iterations=",
+    path_boot_iter,
+    ")..."
+  )
+  severity_path_uncertainty <- bootstrap_bt_weekly_path_severity(
+    model_data = modeling_table,
+    bt_cfg = PIPELINE_CONFIG$bt_severity_model,
+    severity_weights = PIPELINE_CONFIG$severity_weights,
+    fixed_lambda = fixed_lambda,
+    n_boot = path_boot_iter,
+    seed = PIPELINE_CONFIG$uncertainty$seed,
+    workers = workers
+  ) %>%
+    mutate(
+      fixed_lambda = fixed_lambda,
+      bootstrap_scope = "weekly_cumulative_refit"
+    )
+
+  write_output_csv(
+    severity_path_uncertainty,
+    PIPELINE_CONFIG$output_paths$severity_bt_weekly_path_uncertainty
+  )
+  message("Wrote severity weekly path uncertainty: ", PIPELINE_CONFIG$output_paths$severity_bt_weekly_path_uncertainty)
+} else {
+  message("Skipping weekly severity path uncertainty (PATH_BOOTSTRAP_ITER <= 0).")
+}

@@ -11,6 +11,8 @@ Each model has its own:
 - holdout validation vs its own baseline
 - uncertainty stage (validation metrics + player-rating uncertainty)
 
+Optional path uncertainty is also supported via cumulative week-by-week refits.
+
 Pipeline output also includes a unified full leaderboard table:
 
 - `data/output/shared/leaderboard_full_bt_ridge.csv`
@@ -96,6 +98,17 @@ Quick smoke test:
 ```bash
 END_TO_END_BOOTSTRAP_ITER=25 PIPELINE_WORKERS=12 Rscript scripts/10_run-all.R
 ```
+
+Enable cumulative weekly path uncertainty:
+
+```bash
+PATH_BOOTSTRAP_ITER=100 PIPELINE_WORKERS=12 Rscript scripts/10_run-all.R
+```
+
+Path uncertainty outputs:
+
+- `data/output/win/path_uncertainty_weekly_win_bt_ridge.csv`
+- `data/output/severity/path_uncertainty_weekly_severity_bt_ridge.csv`
 
 `10_run-all.R` now caches preprocessing by default:
 

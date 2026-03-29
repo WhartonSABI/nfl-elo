@@ -612,6 +612,524 @@ sample_game_block_rows <- function(df, games, game_chunks) {
     select(-.bootstrap_order)
 }
 
+locate_game_week_lookup_file <- function(explicit_path = NULL) {
+  if (!is.null(explicit_path) && !is.na(explicit_path) && file.exists(explicit_path)) {
+    return(explicit_path)
+  }
+
+  project_root <- if (exists("PROJECT_ROOT", inherits = TRUE)) get("PROJECT_ROOT", inherits = TRUE) else getwd()
+  input_dir <- if (exists("INPUT_DIR", inherits = TRUE)) get("INPUT_DIR", inherits = TRUE) else file.path(project_root, "data", "input")
+
+  candidates <- c(
+    file.path(input_dir, "hudl_iq_game_ids.csv"),
+    file.path(project_root, "data", "processed", "hudl_iq_game_ids.csv"),
+    file.path(project_root, "archived", "data", "processed", "hudl_iq_game_ids.csv")
+  )
+  existing <- candidates[file.exists(candidates)]
+  if (length(existing) == 0L) {
+    return(NA_character_)
+  }
+  existing[[1]]
+}
+
+extract_nflfast_week <- function(nflfast_game_id) {
+  x <- as.character(nflfast_game_id)
+  ok <- grepl("^[0-9]{4}_[0-9]{2}_", x)
+  out <- rep(NA_integer_, length(x))
+  out[ok] <- suppressWarnings(as.integer(sub("^[0-9]{4}_([0-9]{2})_.*$", "\\1", x[ok])))
+  out
+}
+
+build_game_week_lookup <- function(model_data, week_lookup_path = NULL) {
+  assert_columns(model_data, c("game_id"), "model_data")
+
+  row_col <- if ("row_index" %in% names(model_data)) "row_index" else NULL
+  games_base <- if (!is.null(row_col)) {
+    model_data %>%
+      group_by(game_id) %>%
+      summarise(first_row = min(.data[[row_col]], na.rm = TRUE), .groups = "drop")
+  } else {
+    model_data %>%
+      mutate(.tmp_row = row_number()) %>%
+      group_by(game_id) %>%
+      summarise(first_row = min(.tmp_row), .groups = "drop")
+  }
+
+  games_base <- games_base %>%
+    arrange(first_row, game_id) %>%
+    mutate(game_key = as.character(game_id))
+
+  lookup_path <- locate_game_week_lookup_file(week_lookup_path)
+  has_lookup <- !is.na(lookup_path)
+
+  if (!has_lookup) {
+    week_tbl <- games_base %>%
+      mutate(
+        week_num = row_number(),
+        week_index = row_number(),
+        week_label = paste0("G", formatC(week_index, width = 3, flag = "0")),
+        week_source = "game_sequence"
+      ) %>%
+      select(game_id, first_row, week_num, week_index, week_label, week_source)
+    return(week_tbl)
+  }
+
+  lookup_raw <- read_csv(lookup_path, show_col_types = FALSE, name_repair = "unique_quiet") %>%
+    drop_index_columns()
+  if (!"game_id" %in% names(lookup_raw)) {
+    warning("Week lookup file has no game_id column (", lookup_path, "); falling back to game sequence.")
+    week_tbl <- games_base %>%
+      mutate(
+        week_num = row_number(),
+        week_index = row_number(),
+        week_label = paste0("G", formatC(week_index, width = 3, flag = "0")),
+        week_source = "game_sequence"
+      ) %>%
+      select(game_id, first_row, week_num, week_index, week_label, week_source)
+    return(week_tbl)
+  }
+
+  lookup_tbl <- lookup_raw %>%
+    mutate(game_key = as.character(game_id))
+
+  week_num_vec <- if ("week" %in% names(lookup_tbl)) {
+    suppressWarnings(as.integer(as.character(lookup_tbl$week)))
+  } else if ("nflfast_game_id" %in% names(lookup_tbl)) {
+    extract_nflfast_week(lookup_tbl$nflfast_game_id)
+  } else {
+    rep(NA_integer_, nrow(lookup_tbl))
+  }
+
+  lookup_tbl <- lookup_tbl %>%
+    mutate(week_num = week_num_vec) %>%
+    group_by(game_key) %>%
+    summarise(week_num = first(week_num[!is.na(week_num)]), .groups = "drop")
+
+  merged <- games_base %>%
+    left_join(lookup_tbl, by = "game_key") %>%
+    arrange(first_row, game_id)
+
+  if (all(is.na(merged$week_num))) {
+    warning("Could not derive week numbers from ", lookup_path, "; falling back to game sequence.")
+    week_tbl <- merged %>%
+      mutate(
+        week_num = row_number(),
+        week_index = row_number(),
+        week_label = paste0("G", formatC(week_index, width = 3, flag = "0")),
+        week_source = "game_sequence"
+      ) %>%
+      select(game_id, first_row, week_num, week_index, week_label, week_source)
+    return(week_tbl)
+  }
+
+  max_week <- suppressWarnings(max(merged$week_num, na.rm = TRUE))
+  if (!is.finite(max_week)) {
+    max_week <- 0L
+  }
+  missing_idx <- which(is.na(merged$week_num))
+  if (length(missing_idx) > 0L) {
+    merged$week_num[missing_idx] <- as.integer(max_week) + seq_along(missing_idx)
+  }
+
+  merged %>%
+    mutate(
+      week_num = as.integer(week_num),
+      week_index = dense_rank(week_num),
+      week_label = sprintf("%02d", week_num),
+      week_source = "lookup"
+    ) %>%
+    select(game_id, first_row, week_num, week_index, week_label, week_source)
+}
+
+bootstrap_bt_weekly_path_win <- function(
+  model_data,
+  bt_cfg,
+  fixed_lambda,
+  n_boot,
+  seed = 42L,
+  workers = 1L,
+  week_lookup_path = NULL
+) {
+  if (n_boot <= 0L) {
+    return(tibble())
+  }
+
+  target_col <- bt_cfg$target_col
+  assert_columns(
+    model_data,
+    c("game_id", "event_game_index", "rusher_name", "blocker_name", "double_team", target_col),
+    "model_data"
+  )
+
+  model_data <- model_data %>%
+    arrange(game_id, play_id, event_game_index)
+  week_lookup <- build_game_week_lookup(model_data, week_lookup_path)
+  model_data <- model_data %>%
+    left_join(week_lookup %>% select(game_id, week_index, week_label, week_source), by = "game_id")
+
+  levels_tbl <- get_bt_levels(model_data)
+  rusher_levels <- levels_tbl$rusher_levels
+  blocker_levels <- levels_tbl$blocker_levels
+
+  alpha_local <- as.numeric(bt_cfg$alpha)
+  include_double_team_local <- isTRUE(bt_cfg$include_double_team)
+  standardize_local <- isTRUE(bt_cfg$standardize)
+  fixed_lambda_local <- as.numeric(fixed_lambda)
+  rating_scale_local <- as.numeric(bt_cfg$rating_scale)
+  target_col_local <- target_col
+
+  build_x_fn <- to_sparse_bt_matrix
+  sample_fn <- sample_game_block_rows
+  extract_coef_fn <- extract_glmnet_binomial_coefficients
+  build_ratings_fn <- build_player_ratings_from_term_scores
+
+  week_meta <- week_lookup %>%
+    distinct(week_index, week_label, week_source, week_num) %>%
+    arrange(week_index)
+
+  out_list <- vector("list", nrow(week_meta))
+
+  for (i in seq_len(nrow(week_meta))) {
+    w <- week_meta$week_index[[i]]
+    w_label <- week_meta$week_label[[i]]
+    w_source <- week_meta$week_source[[i]]
+    w_num <- week_meta$week_num[[i]]
+
+    games_w <- week_lookup %>%
+      filter(week_index <= w) %>%
+      arrange(first_row) %>%
+      pull(game_id)
+    data_w <- model_data %>%
+      filter(game_id %in% games_w)
+    game_chunks_w <- split(data_w, data_w$game_id)
+
+    x_obs <- build_x_fn(
+      df = data_w,
+      rusher_levels = rusher_levels,
+      blocker_levels = blocker_levels,
+      include_double_team = include_double_team_local
+    )
+    y_obs <- as.numeric(data_w[[target_col_local]])
+    fit_obs <- glmnet(
+      x = x_obs,
+      y = y_obs,
+      family = "binomial",
+      alpha = alpha_local,
+      lambda = fixed_lambda_local,
+      standardize = standardize_local
+    )
+    observed_ratings <- extract_coef_fn(fit_obs, fixed_lambda_local) %>%
+      filter(term != "(Intercept)") %>%
+      transmute(term = term, term_score = coef) %>%
+      build_ratings_fn(
+        rating_scale = rating_scale_local,
+        score_col_name = "bt_logit_score",
+        source_label = "weekly_cumulative_observed_fit"
+      ) %>%
+      transmute(
+        player_name = player_name,
+        role = role,
+        observed_score = bt_logit_score,
+        observed_elo_like = elo_like_score
+      )
+
+    players_this_week <- model_data %>%
+      filter(week_index == w) %>%
+      transmute(player_name = rusher_name, role = "Rusher") %>%
+      bind_rows(
+        model_data %>%
+          filter(week_index == w) %>%
+          transmute(player_name = blocker_name, role = "Blocker")
+      ) %>%
+      distinct() %>%
+      mutate(played_this_week = TRUE)
+
+    draw_tbl <- parallel_map(
+      iterable = seq_len(n_boot),
+      workers = workers,
+      seed = seed + as.integer(w) * 1000L,
+      worker_fn = function(b) {
+        boot_df <- sample_fn(data_w, games_w, game_chunks_w)
+        x_boot <- build_x_fn(
+          df = boot_df,
+          rusher_levels = rusher_levels,
+          blocker_levels = blocker_levels,
+          include_double_team = include_double_team_local
+        )
+        y_boot <- as.numeric(boot_df[[target_col_local]])
+        fit_boot <- glmnet(
+          x = x_boot,
+          y = y_boot,
+          family = "binomial",
+          alpha = alpha_local,
+          lambda = fixed_lambda_local,
+          standardize = standardize_local
+        )
+
+        extract_coef_fn(fit_boot, fixed_lambda_local) %>%
+          filter(term != "(Intercept)") %>%
+          transmute(term = term, term_score = coef) %>%
+          build_ratings_fn(
+            rating_scale = rating_scale_local,
+            score_col_name = "bt_logit_score",
+            source_label = "weekly_cumulative_bootstrap_fit"
+          ) %>%
+          transmute(
+            player_name = player_name,
+            role = role,
+            bt_logit_score = bt_logit_score,
+            elo_like_score = elo_like_score,
+            iteration = b
+          )
+      }
+    ) %>%
+      bind_rows()
+
+    out_list[[i]] <- draw_tbl %>%
+      group_by(player_name, role) %>%
+      summarise(
+        mean_score = mean(bt_logit_score),
+        sd_score = sd(bt_logit_score),
+        q025 = quantile(bt_logit_score, 0.025),
+        q50 = quantile(bt_logit_score, 0.50),
+        q975 = quantile(bt_logit_score, 0.975),
+        mean_elo_like = mean(elo_like_score),
+        sd_elo_like = sd(elo_like_score),
+        n_boot = n(),
+        .groups = "drop"
+      ) %>%
+      left_join(observed_ratings, by = c("player_name", "role")) %>%
+      left_join(players_this_week, by = c("player_name", "role")) %>%
+      mutate(
+        played_this_week = coalesce(played_this_week, FALSE),
+        week_index = w,
+        week_label = w_label,
+        week_num = w_num,
+        week_source = w_source,
+        cumulative_games = length(games_w),
+        cumulative_rows = nrow(data_w),
+        iterations = n_boot
+      )
+  }
+
+  bind_rows(out_list) %>%
+    arrange(week_index, role, desc(mean_elo_like), player_name)
+}
+
+bootstrap_bt_weekly_path_severity <- function(
+  model_data,
+  bt_cfg,
+  severity_weights,
+  fixed_lambda,
+  n_boot,
+  seed = 42L,
+  workers = 1L,
+  week_lookup_path = NULL
+) {
+  if (n_boot <= 0L) {
+    return(tibble())
+  }
+
+  target_col <- bt_cfg$target_col
+  outcome_col <- bt_cfg$outcome_col
+  class_levels <- bt_cfg$class_levels
+
+  model_data <- ensure_severity_outcome_column(model_data, bt_cfg, severity_weights) %>%
+    arrange(game_id, play_id, event_game_index)
+  assert_columns(
+    model_data,
+    c("game_id", "event_game_index", "rusher_name", "blocker_name", "double_team", target_col, outcome_col),
+    "model_data"
+  )
+
+  week_lookup <- build_game_week_lookup(model_data, week_lookup_path)
+  model_data <- model_data %>%
+    left_join(week_lookup %>% select(game_id, week_index, week_label, week_source), by = "game_id")
+
+  levels_tbl <- get_bt_levels(model_data)
+  rusher_levels <- levels_tbl$rusher_levels
+  blocker_levels <- levels_tbl$blocker_levels
+
+  alpha_local <- as.numeric(bt_cfg$alpha)
+  include_double_team_local <- isTRUE(bt_cfg$include_double_team)
+  standardize_local <- isTRUE(bt_cfg$standardize)
+  fixed_lambda_local <- as.numeric(fixed_lambda)
+  rating_scale_local <- as.numeric(bt_cfg$rating_scale)
+  class_weights_local <- bt_cfg$class_weights
+  outcome_col_local <- outcome_col
+  class_levels_local <- class_levels
+
+  build_x_fn <- to_sparse_bt_matrix
+  sample_fn <- sample_game_block_rows
+  get_weights_fn <- get_class_observation_weights
+  extract_coef_fn <- extract_glmnet_multinomial_coefficients
+  weighted_scores_fn <- severity_weighted_term_scores
+  build_ratings_fn <- build_player_ratings_from_term_scores
+
+  zero_term_scores <- tibble(
+    term = c(paste0("rusher::", rusher_levels), paste0("blocker::", blocker_levels)),
+    term_score = 0
+  )
+
+  fit_severity_ratings <- function(df, source_label) {
+    y_chr <- as.character(df[[outcome_col_local]])
+    present_classes <- intersect(class_levels_local, unique(y_chr[!is.na(y_chr)]))
+
+    # Multinomial requires at least two observed classes in the sample.
+    if (length(present_classes) < 2L) {
+      return(
+        build_ratings_fn(
+          term_scores = zero_term_scores,
+          rating_scale = rating_scale_local,
+          score_col_name = "weighted_severity_logit_score",
+          source_label = source_label
+        )
+      )
+    }
+
+    x_fit <- build_x_fn(
+      df = df,
+      rusher_levels = rusher_levels,
+      blocker_levels = blocker_levels,
+      include_double_team = include_double_team_local
+    )
+    y_fit <- factor(y_chr, levels = present_classes)
+    fit_weights <- get_weights_fn(y_fit, class_weights_local[present_classes])
+
+    fit <- tryCatch(
+      glmnet(
+        x = x_fit,
+        y = y_fit,
+        family = "multinomial",
+        alpha = alpha_local,
+        lambda = fixed_lambda_local,
+        standardize = standardize_local,
+        weights = fit_weights
+      ),
+      error = function(e) NULL
+    )
+
+    if (is.null(fit)) {
+      return(
+        build_ratings_fn(
+          term_scores = zero_term_scores,
+          rating_scale = rating_scale_local,
+          score_col_name = "weighted_severity_logit_score",
+          source_label = source_label
+        )
+      )
+    }
+
+    term_scores <- extract_coef_fn(fit, fixed_lambda_local, class_levels = present_classes) %>%
+      weighted_scores_fn(severity_weights) %>%
+      transmute(term = term, term_score = term_score)
+
+    if (nrow(term_scores) == 0L) {
+      term_scores <- zero_term_scores
+    }
+
+    build_ratings_fn(
+      term_scores = term_scores,
+      rating_scale = rating_scale_local,
+      score_col_name = "weighted_severity_logit_score",
+      source_label = source_label
+    )
+  }
+
+  week_meta <- week_lookup %>%
+    distinct(week_index, week_label, week_source, week_num) %>%
+    arrange(week_index)
+
+  out_list <- vector("list", nrow(week_meta))
+
+  for (i in seq_len(nrow(week_meta))) {
+    w <- week_meta$week_index[[i]]
+    w_label <- week_meta$week_label[[i]]
+    w_source <- week_meta$week_source[[i]]
+    w_num <- week_meta$week_num[[i]]
+
+    games_w <- week_lookup %>%
+      filter(week_index <= w) %>%
+      arrange(first_row) %>%
+      pull(game_id)
+    data_w <- model_data %>%
+      filter(game_id %in% games_w)
+    game_chunks_w <- split(data_w, data_w$game_id)
+
+    observed_ratings <- fit_severity_ratings(
+      df = data_w,
+      source_label = "weekly_cumulative_observed_fit"
+    ) %>%
+      transmute(
+        player_name = player_name,
+        role = role,
+        observed_score = weighted_severity_logit_score,
+        observed_elo_like = elo_like_score
+      )
+
+    players_this_week <- model_data %>%
+      filter(week_index == w) %>%
+      transmute(player_name = rusher_name, role = "Rusher") %>%
+      bind_rows(
+        model_data %>%
+          filter(week_index == w) %>%
+          transmute(player_name = blocker_name, role = "Blocker")
+      ) %>%
+      distinct() %>%
+      mutate(played_this_week = TRUE)
+
+    draw_tbl <- parallel_map(
+      iterable = seq_len(n_boot),
+      workers = workers,
+      seed = seed + as.integer(w) * 1000L,
+      worker_fn = function(b) {
+        boot_df <- sample_fn(data_w, games_w, game_chunks_w)
+        fit_severity_ratings(
+          df = boot_df,
+          source_label = "weekly_cumulative_bootstrap_fit"
+        ) %>%
+          transmute(
+            player_name = player_name,
+            role = role,
+            weighted_severity_logit_score = weighted_severity_logit_score,
+            elo_like_score = elo_like_score,
+            iteration = b
+          )
+      }
+    ) %>%
+      bind_rows()
+
+    out_list[[i]] <- draw_tbl %>%
+      group_by(player_name, role) %>%
+      summarise(
+        mean_score = mean(weighted_severity_logit_score),
+        sd_score = sd(weighted_severity_logit_score),
+        q025 = quantile(weighted_severity_logit_score, 0.025),
+        q50 = quantile(weighted_severity_logit_score, 0.50),
+        q975 = quantile(weighted_severity_logit_score, 0.975),
+        mean_elo_like = mean(elo_like_score),
+        sd_elo_like = sd(elo_like_score),
+        n_boot = n(),
+        .groups = "drop"
+      ) %>%
+      left_join(observed_ratings, by = c("player_name", "role")) %>%
+      left_join(players_this_week, by = c("player_name", "role")) %>%
+      mutate(
+        played_this_week = coalesce(played_this_week, FALSE),
+        week_index = w,
+        week_label = w_label,
+        week_num = w_num,
+        week_source = w_source,
+        cumulative_games = length(games_w),
+        cumulative_rows = nrow(data_w),
+        iterations = n_boot
+      )
+  }
+
+  bind_rows(out_list) %>%
+    arrange(week_index, role, desc(mean_elo_like), player_name)
+}
+
 bootstrap_bt_end_to_end_win <- function(
   model_data,
   bt_cfg,

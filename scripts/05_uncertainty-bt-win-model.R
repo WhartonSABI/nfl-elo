@@ -74,3 +74,32 @@ write_output_csv(rating_uncertainty, PIPELINE_CONFIG$output_paths$win_bt_rating_
 
 message("Wrote win validation uncertainty: ", PIPELINE_CONFIG$output_paths$win_bt_validation_uncertainty)
 message("Wrote win rating uncertainty: ", PIPELINE_CONFIG$output_paths$win_bt_rating_uncertainty)
+
+path_boot_iter <- as.integer(PIPELINE_CONFIG$uncertainty$path_bootstrap_iterations)
+if (path_boot_iter > 0L) {
+  message(
+    "Running weekly cumulative win path uncertainty (bootstrap iterations=",
+    path_boot_iter,
+    ")..."
+  )
+  win_path_uncertainty <- bootstrap_bt_weekly_path_win(
+    model_data = modeling_table,
+    bt_cfg = PIPELINE_CONFIG$bt_win_model,
+    fixed_lambda = fixed_lambda,
+    n_boot = path_boot_iter,
+    seed = PIPELINE_CONFIG$uncertainty$seed,
+    workers = workers
+  ) %>%
+    mutate(
+      fixed_lambda = fixed_lambda,
+      bootstrap_scope = "weekly_cumulative_refit"
+    )
+
+  write_output_csv(
+    win_path_uncertainty,
+    PIPELINE_CONFIG$output_paths$win_bt_weekly_path_uncertainty
+  )
+  message("Wrote win weekly path uncertainty: ", PIPELINE_CONFIG$output_paths$win_bt_weekly_path_uncertainty)
+} else {
+  message("Skipping weekly win path uncertainty (PATH_BOOTSTRAP_ITER <= 0).")
+}
