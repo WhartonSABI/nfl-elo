@@ -1,2 +1,0 @@
-n_rows,n_games,n_splits,logloss_elo,logloss_pbwr,logloss_global,brier_elo,brier_pbwr,brier_global,delta_logloss_elo_vs_pbwr,delta_brier_elo_vs_pbwr,delta_logloss_elo_vs_global,delta_brier_elo_vs_global
-113834,199,3,0.5813510055277422,0.5673478271379141,0.5679655353825583,0.19530299908267112,0.189871757158715,0.19003499967385423,0.014003178389828118,0.005431241923956157,0.013385470145185187,0.0052679994088172186
