@@ -34,6 +34,11 @@ leaderboard <- read_csv(leaderboard_path, show_col_types = FALSE)
 win_path <- read_csv(win_path_uncertainty_path, show_col_types = FALSE)
 severity_path <- read_csv(severity_path_uncertainty_path, show_col_types = FALSE)
 
+if (!"win_boot_q25_score" %in% names(leaderboard)) leaderboard$win_boot_q25_score <- NA_real_
+if (!"win_boot_q75_score" %in% names(leaderboard)) leaderboard$win_boot_q75_score <- NA_real_
+if (!"severity_boot_q25_score" %in% names(leaderboard)) leaderboard$severity_boot_q25_score <- NA_real_
+if (!"severity_boot_q75_score" %in% names(leaderboard)) leaderboard$severity_boot_q75_score <- NA_real_
+
 theme_set(theme_minimal(base_size = 12))
 
 # Figure 1: BT score distributions by role and model.
@@ -88,7 +93,9 @@ top_win <- leaderboard %>%
     role,
     player_name,
     role_interactions,
-    score = win_bt_logit_score
+    score = win_bt_logit_score,
+    lower_score = coalesce(win_boot_q25_score, win_boot_q025_score),
+    upper_score = coalesce(win_boot_q75_score, win_boot_q975_score)
   )
 
 top_severity <- leaderboard %>%
@@ -102,7 +109,9 @@ top_severity <- leaderboard %>%
     role,
     player_name,
     role_interactions,
-    score = severity_weighted_logit_score
+    score = severity_weighted_logit_score,
+    lower_score = coalesce(severity_boot_q25_score, severity_boot_q025_score),
+    upper_score = coalesce(severity_boot_q75_score, severity_boot_q975_score)
   )
 
 top_tbl <- bind_rows(top_win, top_severity) %>%
@@ -117,17 +126,26 @@ top_tbl <- bind_rows(top_win, top_severity) %>%
 
 panel_labels <- function(x) sub("___.*$", "", x)
 
-p_top <- ggplot(top_tbl, aes(x = score, y = player_panel, fill = role)) +
-  geom_col(width = 0.72, alpha = 0.90) +
+p_top <- ggplot(top_tbl, aes(y = player_panel, color = role)) +
+  geom_segment(
+    aes(x = lower_score, xend = upper_score, yend = player_panel),
+    linewidth = 1.05,
+    alpha = 0.72
+  ) +
+  geom_point(aes(x = score), size = 2.3, alpha = 0.95) +
   facet_wrap(~panel, scales = "free_y", ncol = 2) +
   scale_y_discrete(labels = panel_labels) +
   labs(
-    title = paste0("Top ", top_n, " Players by Raw BT Score (min ", min_interactions, " interactions)"),
-    x = "Raw BT score",
+    title = paste0("Top ", top_n, " Players by Raw BT Score with 50% Bootstrap Intervals"),
+    subtitle = paste0("Minimum ", min_interactions, " interactions per player"),
+    x = "Raw BT score (point estimate with central 50% bootstrap interval)",
     y = NULL,
-    fill = "Role"
+    color = "Role"
   ) +
-  scale_fill_manual(values = c(Blocker = "#1f77b4", Rusher = "#d62728"))
+  scale_color_manual(values = c(Blocker = "#1f77b4", Rusher = "#d62728")) +
+  theme(
+    panel.grid.minor.y = element_blank()
+  )
 
 ggsave(
   filename = file.path(fig_dir, "bt_top_players_by_role.png"),
