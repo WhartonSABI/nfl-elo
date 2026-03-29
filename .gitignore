@@ -2,6 +2,9 @@
 ### FILES & FOLDERS ###
 #######################
 
+# old files
+archived/
+
 # large data files
 data/raw
 data/processed

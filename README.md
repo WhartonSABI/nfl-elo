@@ -1,41 +1,128 @@
-# NFL ELO
+# NFL Pass Rush Ridge Bradley-Terry Pipeline
 
-This repository contains the work of the NFL Pass Rushing ELO project.
+This repository runs a single pipeline with two separate ridge Bradley-Terry models:
 
-## Directory Structure
+- `win` model: binary `0/1` target from the 2.5-second win logic.
+- `severity` model: multinomial outcome model (`loss/win/hit/sack`) converted to weighted expected severity (`0.0 / 0.2 / 0.4 / 1.0`).
 
-```
+Each model has its own:
+
+- fit stage
+- holdout validation vs its own baseline
+- uncertainty stage (validation metrics + player-rating uncertainty)
+
+Pipeline output also includes a unified full leaderboard table:
+
+- `data/output/shared/leaderboard_full_bt_ridge.csv`
+
+Validation uncertainty uses game-level block bootstrap.  
+Severity uncertainty includes both expected-severity metrics (`mse/rmse/mae`) and multiclass logloss.
+
+## Current Layout
+
+```text
 .
-├── code/
-│   └── code.Rproj
+├── archived/                  # legacy code, outputs, papers, slides, prior data
 ├── data/
-│   ├── processed/
-│       ├── 10_sample_games.csv
-│       ├── five_weeks_hudl_data.csv
-│       ├── full_hudl_data.csv
-│       └── hudl_iq_game_ids.csv
-│   ├── raw/
-│       ├── Hudl IQ 2021 player roster.csv
-│       ├── Hudl IQ 2021 NFL Events.csv
-│       ├── Hudl IQ 2021 NFL freeze frames.csv
-│       └── Hudl IQ 2021 NFL Events + Freeze Frame.csv
-│   └── results/
-│       ├── clean_beat_data.csv
-│       ├── full_elo_history.csv
-│       ├── full_player_elo_ratings.csv
-│       ├── full_top_10_blockers.png
-│       ├── full_top_10_rushers.png
-│       ├── parallel_elo_history.csv
-│       ├── parallel_player_elo_ratings.csv
-│       ├── parallel_top_10_blockers.png
-│       ├── parallel_top_10_rushers.png
-│       ├── partial_elo_history.csv
-│       ├── partial_player_elo_ratings.csv
-│       ├── partial_top_10_blockers.png
-│       ├── partial_top_10_rushers.png
-│       └── predict_beat_data.csv
-├── literature/
-├── paper/
-└── presentations/
-│   └── lab-capstone.pdf
+│   ├── raw/                   # optional preferred location for raw Hudl files
+│   ├── input/
+│   │   ├── results2.csv
+│   │   ├── sacks.csv
+│   │   └── hits.csv
+│   └── output/
+│       ├── shared/
+│       │   └── leaderboard_full_bt_ridge.csv
+│       ├── win/
+│       └── severity/
+├── scripts/
+│   ├── 00_config.R
+│   ├── 00_utils.R
+│   ├── 01_build-inputs.R
+│   ├── 02_build-modeling-table.R
+│   ├── 03_fit-bt-win-model.R
+│   ├── 04_validate-bt-win-model.R
+│   ├── 05_uncertainty-bt-win-model.R
+│   ├── 06_fit-bt-severity-model.R
+│   ├── 07_validate-bt-severity-model.R
+│   ├── 08_uncertainty-bt-severity-model.R
+│   ├── 09_build-full-bt-leaderboard.R
+│   ├── 10_run-all.R
+│   ├── 11_fit-regularized-bt-win.R
+│   └── 12_compare-elo-vs-pbwr-win.R
+├── README.md
+└── .gitignore
+```
+
+## Run The Full Pipeline
+
+From repository root:
+
+```bash
+Rscript scripts/10_run-all.R
+```
+
+Raw data lookup order:
+
+1. `data/raw/`
+2. `archived/data/raw/`
+
+Required raw files:
+
+- `Hudl IQ 2021 NFL freeze frames.csv` (or `Hudl IQ 2021 NFL Events + Freeze Frame.csv`)
+- `Hudl IQ 2021 player roster.csv`
+
+## Parallel Workers
+
+Parallelizable stages use:
+
+- `workers = max(1, n_cores - 4)`
+
+With 16 cores, that resolves to 12 workers. Override explicitly if needed:
+
+```bash
+PIPELINE_WORKERS=12 Rscript scripts/10_run-all.R
+```
+
+## Runtime Controls
+
+Tune end-to-end bootstrap intensity (validation + player uncertainty):
+
+```bash
+END_TO_END_BOOTSTRAP_ITER=400 Rscript scripts/10_run-all.R
+```
+
+Quick smoke test:
+
+```bash
+END_TO_END_BOOTSTRAP_ITER=25 PIPELINE_WORKERS=12 Rscript scripts/10_run-all.R
+```
+
+`10_run-all.R` now caches preprocessing by default:
+
+- it skips `01_build-inputs.R` if `data/input/results2.csv`, `sacks.csv`, and `hits.csv` already exist
+- it skips `02_build-modeling-table.R` if `data/output/shared/modeling_table.csv` already exists
+
+Legacy explicit skip flag (still supported):
+
+```bash
+SKIP_BUILD_INPUTS=1 Rscript scripts/10_run-all.R
+```
+
+Force rebuild controls:
+
+```bash
+FORCE_REBUILD_INPUTS=1 Rscript scripts/10_run-all.R
+FORCE_REBUILD_MODELING=1 Rscript scripts/10_run-all.R
+```
+
+Lambda grid for BT CV is now explicit and sequence-based (in [`scripts/00_config.R`](/Users/Jonathan/wsabi/lab/projects/nfl-elo/scripts/00_config.R)):
+
+- `lambda_grid$scale` = `"log"` or `"linear"`
+- `lambda_grid$max`, `lambda_grid$min`
+- `lambda_grid$length`
+
+Set the hard win threshold (seconds from snap):
+
+```bash
+WIN_SECONDS_THRESHOLD=2.5 Rscript scripts/10_run-all.R
 ```

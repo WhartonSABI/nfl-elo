@@ -1,0 +1,2 @@
+rows_fit,train_severity_mean,lambda_min,lambda_1se,cv_min_cvm,rusher_levels,blocker_levels,outcome_n_loss,outcome_n_win,outcome_n_hit,outcome_n_sack
+160054,0.06076199282741796,6.533201459593776e-5,8.401749869294341e-4,1.2878719149542253,623,348,117005,40550,1473,1026

@@ -1,0 +1,2 @@
+mode,metric,model_value,baseline_value,improvement,n_rows,model_name,lambda_min,lambda_1se
+severity_multiclass,multiclass_logloss,0.6347172987545613,0.6347476310691156,3.0332314554293305e-5,32011,severity_bt_ridge,0.8572777323504962,1.2437632052578398
