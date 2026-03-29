@@ -12,19 +12,16 @@ find_project_root <- function(start_dir = getwd()) {
   }
 }
 
-detect_raw_data_dir <- function(project_root) {
-  candidates <- c(
-    file.path(project_root, "data", "raw"),
-    file.path(project_root, "archived", "data", "raw")
-  )
-  existing <- candidates[dir.exists(candidates)]
-  if (length(existing) == 0L) {
+require_hudl_data_dir <- function(project_root) {
+  hudl_dir <- file.path(project_root, "data", "hudl")
+  if (!dir.exists(hudl_dir)) {
     stop(
-      "Could not locate raw data directory. Checked: ",
-      paste(candidates, collapse = ", ")
+      "Could not locate Hudl data directory at: ",
+      hudl_dir,
+      ". Create this directory and place the required Hudl files there."
     )
   }
-  existing[[1]]
+  hudl_dir
 }
 
 get_env_int <- function(name, default_value) {
@@ -99,7 +96,7 @@ SCRIPTS_DIR <- file.path(PROJECT_ROOT, "scripts")
 DATA_DIR <- file.path(PROJECT_ROOT, "data")
 OUTPUT_DIR <- file.path(DATA_DIR, "output")
 INPUT_DIR <- file.path(DATA_DIR, "input")
-RAW_DATA_DIR <- detect_raw_data_dir(PROJECT_ROOT)
+HUDL_DATA_DIR <- require_hudl_data_dir(PROJECT_ROOT)
 PARALLEL_RESERVED_CORES <- 4L
 PARALLEL_WORKERS <- detect_worker_count(PARALLEL_RESERVED_CORES)
 UNCERTAINTY_SEED <- get_env_int("PIPELINE_SEED", 20260328L)
@@ -109,6 +106,7 @@ END_TO_END_BOOTSTRAP_ITER <- get_env_int("END_TO_END_BOOTSTRAP_ITER", VALIDATION
 PATH_BOOTSTRAP_ITER <- get_env_int("PATH_BOOTSTRAP_ITER", 0L)
 WIN_BASELINE_PRIOR_STRENGTH <- get_env_num("WIN_BASELINE_PRIOR_STRENGTH", 25)
 WIN_BASELINE_MATCHUP_METHOD <- tolower(Sys.getenv("WIN_BASELINE_MATCHUP_METHOD", unset = "logit_mean"))
+SEVERITY_BASELINE_PRIOR_STRENGTH <- get_env_num("SEVERITY_BASELINE_PRIOR_STRENGTH", 50)
 
 SHARED_OUTPUT_DIR <- file.path(OUTPUT_DIR, "shared")
 WIN_OUTPUT_DIR <- file.path(OUTPUT_DIR, "win")
@@ -116,19 +114,23 @@ SEVERITY_OUTPUT_DIR <- file.path(OUTPUT_DIR, "severity")
 
 PIPELINE_CONFIG <- list(
   input_paths = list(
-    results_table = file.path(INPUT_DIR, "results2.csv"),
+    matchups_table = file.path(INPUT_DIR, "matchups.csv"),
     sacks_table = file.path(INPUT_DIR, "sacks.csv"),
-    hits_table = file.path(INPUT_DIR, "hits.csv")
+    hits_table = file.path(INPUT_DIR, "hits.csv"),
+    game_lookup_table = file.path(INPUT_DIR, "hudl_iq_game_ids.csv")
   ),
   raw_input_paths = list(
-    freeze_frames = file.path(RAW_DATA_DIR, "Hudl IQ 2021 NFL freeze frames.csv"),
-    events_freeze_frames = file.path(RAW_DATA_DIR, "Hudl IQ 2021 NFL Events + Freeze Frame.csv"),
-    roster = file.path(RAW_DATA_DIR, "Hudl IQ 2021 player roster.csv")
+    freeze_frames = file.path(HUDL_DATA_DIR, "Hudl IQ 2021 NFL freeze frames.csv"),
+    events_freeze_frames = file.path(HUDL_DATA_DIR, "Hudl IQ 2021 NFL Events + Freeze Frame.csv"),
+    roster = file.path(HUDL_DATA_DIR, "Hudl IQ 2021 player roster.csv")
   ),
   output_paths = list(
     modeling_table = file.path(SHARED_OUTPUT_DIR, "modeling_table.csv"),
     modeling_summary = file.path(SHARED_OUTPUT_DIR, "modeling_summary.csv"),
     bt_full_leaderboard = file.path(SHARED_OUTPUT_DIR, "leaderboard_full_bt_ridge.csv"),
+    bt_all_pro_player_scores = file.path(SHARED_OUTPUT_DIR, "validation_all_pro_player_scores_bt_ridge.csv"),
+    bt_all_pro_summary_metrics = file.path(SHARED_OUTPUT_DIR, "validation_all_pro_metrics_bt_ridge.csv"),
+    bt_all_pro_positive_matches = file.path(SHARED_OUTPUT_DIR, "validation_all_pro_positive_matches_bt_ridge.csv"),
     win_model_artifact = file.path(WIN_OUTPUT_DIR, "model_win_bt_ridge.rds"),
     win_model_diagnostics = file.path(WIN_OUTPUT_DIR, "model_diagnostics_win_bt_ridge.csv"),
     win_model_coefficients = file.path(WIN_OUTPUT_DIR, "model_coefficients_win_bt_ridge.csv"),
@@ -186,7 +188,6 @@ PIPELINE_CONFIG <- list(
     standardize = FALSE,
     include_double_team = TRUE,
     lambda_selection = "lambda.min",
-    rating_scale = 400 / log(10),
     train_interaction_filter = 50L,
     matchup_baseline = list(
       method = WIN_BASELINE_MATCHUP_METHOD,
@@ -215,7 +216,10 @@ PIPELINE_CONFIG <- list(
     standardize = FALSE,
     include_double_team = TRUE,
     lambda_selection = "lambda.min",
-    rating_scale = 400 / log(10)
+    matchup_baseline = list(
+      prior_strength = SEVERITY_BASELINE_PRIOR_STRENGTH,
+      reference_class = "loss"
+    )
   ),
   win_model = list(
     model_name = "win",

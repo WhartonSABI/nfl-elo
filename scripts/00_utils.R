@@ -101,6 +101,35 @@ assert_columns <- function(df, required, object_name = "data frame") {
   }
 }
 
+first_non_missing <- function(x) {
+  x <- x[!is.na(x)]
+  if (is.character(x)) {
+    x <- x[trimws(x) != ""]
+  }
+  if (length(x) == 0L) {
+    return(NA)
+  }
+  x[[1]]
+}
+
+normalize_game_type <- function(x) {
+  out <- toupper(trimws(as.character(x)))
+  out[out == ""] <- NA_character_
+  out
+}
+
+infer_game_type_from_week <- function(week_num) {
+  week_num <- suppressWarnings(as.integer(week_num))
+  dplyr::case_when(
+    !is.na(week_num) & week_num <= 18L ~ "REG",
+    !is.na(week_num) & week_num == 19L ~ "WC",
+    !is.na(week_num) & week_num == 20L ~ "DIV",
+    !is.na(week_num) & week_num == 21L ~ "CON",
+    !is.na(week_num) & week_num == 22L ~ "SB",
+    TRUE ~ NA_character_
+  )
+}
+
 add_interaction_indices <- function(df) {
   df %>%
     group_by(rusher_name) %>%
@@ -112,23 +141,68 @@ add_interaction_indices <- function(df) {
 }
 
 build_modeling_table <- function(config) {
-  results_tbl <- read_csv(config$input_paths$results_table, show_col_types = FALSE, name_repair = "unique_quiet")
+  matchups_tbl <- read_csv(config$input_paths$matchups_table, show_col_types = FALSE, name_repair = "unique_quiet")
   sacks_tbl <- read_csv(config$input_paths$sacks_table, show_col_types = FALSE, name_repair = "unique_quiet")
   hits_tbl <- read_csv(config$input_paths$hits_table, show_col_types = FALSE, name_repair = "unique_quiet")
 
-  results_tbl <- drop_index_columns(results_tbl)
+  matchups_tbl <- drop_index_columns(matchups_tbl)
   sacks_tbl <- drop_index_columns(sacks_tbl)
   hits_tbl <- drop_index_columns(hits_tbl)
 
   assert_columns(
-    results_tbl,
+    matchups_tbl,
     c("game_id", "play_id", "event_game_index", "rusher_name", "blocker_name", "rusher_won", "double_team"),
-    "results table"
+    "matchups table"
   )
   assert_columns(sacks_tbl, c("game_id", "play_uuid", "sack_player", "sack"), "sacks table")
   assert_columns(hits_tbl, c("game_id", "play_uuid", "hit_player", "hit"), "hits table")
 
-  out <- results_tbl %>%
+  lookup_path <- if (!is.null(config$input_paths$game_lookup_table)) {
+    config$input_paths$game_lookup_table
+  } else {
+    NA_character_
+  }
+  game_lookup <- build_game_metadata_lookup(lookup_path)
+
+  if (nrow(game_lookup) > 0L) {
+    total_games <- dplyr::n_distinct(matchups_tbl$game_id)
+
+    matchups_tbl <- matchups_tbl %>%
+      mutate(game_key = as.character(game_id)) %>%
+      left_join(
+        game_lookup %>% select(game_key, week_num, game_type),
+        by = "game_key"
+      ) %>%
+      mutate(
+        game_type = coalesce(normalize_game_type(game_type), infer_game_type_from_week(week_num))
+      )
+
+    unknown_games <- matchups_tbl %>%
+      filter(is.na(game_type)) %>%
+      summarise(n_games = n_distinct(game_id), .groups = "drop") %>%
+      pull(n_games)
+    unknown_games <- if (length(unknown_games) == 0L || is.na(unknown_games)) 0L else as.integer(unknown_games)
+
+    matchups_tbl <- matchups_tbl %>%
+      filter(game_type == "REG") %>%
+      select(-game_key, -week_num, -game_type)
+
+    retained_games <- dplyr::n_distinct(matchups_tbl$game_id)
+    message(
+      "Filtered modeling table inputs to regular season games: ",
+      retained_games,
+      "/",
+      total_games,
+      " retained."
+    )
+    if (unknown_games > 0L) {
+      message("Dropped ", unknown_games, " games with unknown game_type/week metadata.")
+    }
+  } else {
+    warning("No game lookup metadata available; modeling table will include all games (including postseason).")
+  }
+
+  out <- matchups_tbl %>%
     left_join(
       sacks_tbl %>% select(game_id, play_uuid, sack_player, sack),
       by = c("game_id", "play_id" = "play_uuid", "rusher_name" = "sack_player")
@@ -502,7 +576,7 @@ severity_weighted_term_scores <- function(multinomial_coef_tbl, severity_weights
     summarise(term_score = sum(weighted_component), .groups = "drop")
 }
 
-build_player_ratings_from_term_scores <- function(term_scores, rating_scale = 400 / log(10), score_col_name = "bt_score", source_label = "lambda.min") {
+build_player_ratings_from_term_scores <- function(term_scores, score_col_name = "bt_score", source_label = "lambda.min") {
   assert_columns(term_scores, c("term", "term_score"), "term_scores")
 
   player_terms <- term_scores %>%
@@ -516,27 +590,23 @@ build_player_ratings_from_term_scores <- function(term_scores, rating_scale = 40
     empty <- tibble(
       player_name = character(0),
       role = character(0),
-      elo_like_score = numeric(0),
       coefficient_source = character(0)
     )
     empty[[score_col_name]] <- numeric(0)
-    return(empty[, c("player_name", "role", score_col_name, "elo_like_score", "coefficient_source")])
+    return(empty[, c("player_name", "role", score_col_name, "coefficient_source")])
   }
-
-  centered <- player_terms$term_score - mean(player_terms$term_score, na.rm = TRUE)
   out <- player_terms %>%
     transmute(
       player_name = player_name,
       role = role,
       term_score = term_score,
-      elo_like_score = 1000 + rating_scale * centered,
       coefficient_source = source_label
     )
 
   out[[score_col_name]] <- out$term_score
   out <- out %>%
-    select(player_name, role, all_of(score_col_name), elo_like_score, coefficient_source) %>%
-    arrange(desc(elo_like_score))
+    select(player_name, role, all_of(score_col_name), coefficient_source) %>%
+    arrange(desc(.data[[score_col_name]]))
 
   out
 }
@@ -554,8 +624,39 @@ compute_multiclass_logloss_scalar <- function(actual_class, prob_tbl, class_leve
   -mean(log(p[idx]))
 }
 
-compute_multiclass_validation_metrics <- function(actual_class, model_prob_tbl, baseline_class_prob, class_levels, mode = "severity_multiclass") {
+compute_multiclass_validation_metrics_from_prob_tbl <- function(
+  actual_class,
+  model_prob_tbl,
+  baseline_prob_tbl,
+  class_levels,
+  mode = "severity_multiclass",
+  baseline_name = "global_class_freq"
+) {
   assert_columns(model_prob_tbl, class_levels, "model_prob_tbl")
+  assert_columns(baseline_prob_tbl, class_levels, "baseline_prob_tbl")
+
+  model_ll <- compute_multiclass_logloss_scalar(actual_class, model_prob_tbl, class_levels)
+  baseline_ll <- compute_multiclass_logloss_scalar(actual_class, baseline_prob_tbl, class_levels)
+
+  tibble(
+    mode = mode,
+    metric = "multiclass_logloss",
+    baseline_name = baseline_name,
+    model_value = model_ll,
+    baseline_value = baseline_ll,
+    improvement = baseline_ll - model_ll,
+    n_rows = nrow(model_prob_tbl)
+  )
+}
+
+compute_multiclass_validation_metrics <- function(
+  actual_class,
+  model_prob_tbl,
+  baseline_class_prob,
+  class_levels,
+  mode = "severity_multiclass",
+  baseline_name = "global_class_freq"
+) {
   baseline_vec <- baseline_class_prob[class_levels]
   if (any(is.na(baseline_vec))) {
     stop("baseline_class_prob is missing one or more class levels.")
@@ -567,16 +668,13 @@ compute_multiclass_validation_metrics <- function(actual_class, model_prob_tbl, 
   )
   baseline_mat <- as_tibble(baseline_raw, .name_repair = "minimal")
 
-  model_ll <- compute_multiclass_logloss_scalar(actual_class, model_prob_tbl, class_levels)
-  baseline_ll <- compute_multiclass_logloss_scalar(actual_class, baseline_mat, class_levels)
-
-  tibble(
+  compute_multiclass_validation_metrics_from_prob_tbl(
+    actual_class = actual_class,
+    model_prob_tbl = model_prob_tbl,
+    baseline_prob_tbl = baseline_mat,
+    class_levels = class_levels,
     mode = mode,
-    metric = "multiclass_logloss",
-    model_value = model_ll,
-    baseline_value = baseline_ll,
-    improvement = baseline_ll - model_ll,
-    n_rows = nrow(model_prob_tbl)
+    baseline_name = baseline_name
   )
 }
 
@@ -620,11 +718,7 @@ locate_game_week_lookup_file <- function(explicit_path = NULL) {
   project_root <- if (exists("PROJECT_ROOT", inherits = TRUE)) get("PROJECT_ROOT", inherits = TRUE) else getwd()
   input_dir <- if (exists("INPUT_DIR", inherits = TRUE)) get("INPUT_DIR", inherits = TRUE) else file.path(project_root, "data", "input")
 
-  candidates <- c(
-    file.path(input_dir, "hudl_iq_game_ids.csv"),
-    file.path(project_root, "data", "processed", "hudl_iq_game_ids.csv"),
-    file.path(project_root, "archived", "data", "processed", "hudl_iq_game_ids.csv")
-  )
+  candidates <- c(file.path(input_dir, "hudl_iq_game_ids.csv"))
   existing <- candidates[file.exists(candidates)]
   if (length(existing) == 0L) {
     return(NA_character_)
@@ -638,6 +732,64 @@ extract_nflfast_week <- function(nflfast_game_id) {
   out <- rep(NA_integer_, length(x))
   out[ok] <- suppressWarnings(as.integer(sub("^[0-9]{4}_([0-9]{2})_.*$", "\\1", x[ok])))
   out
+}
+
+read_game_metadata_from_file <- function(path) {
+  if (is.null(path) || is.na(path) || !file.exists(path)) {
+    return(tibble())
+  }
+
+  raw <- tryCatch(
+    read_csv(path, show_col_types = FALSE, name_repair = "unique_quiet"),
+    error = function(e) tibble()
+  )
+  if (nrow(raw) == 0L || !"game_id" %in% names(raw)) {
+    return(tibble())
+  }
+
+  raw <- drop_index_columns(raw)
+  nflfast_vec <- if ("nflfast_game_id" %in% names(raw)) as.character(raw$nflfast_game_id) else rep(NA_character_, nrow(raw))
+  week_vec <- if ("week" %in% names(raw)) {
+    suppressWarnings(as.integer(as.character(raw$week)))
+  } else {
+    extract_nflfast_week(nflfast_vec)
+  }
+  game_type_vec <- if ("game_type" %in% names(raw)) normalize_game_type(raw$game_type) else rep(NA_character_, nrow(raw))
+
+  tibble(
+    game_key = as.character(raw$game_id),
+    nflfast_game_id = nflfast_vec,
+    week_num = week_vec,
+    game_type = game_type_vec
+  ) %>%
+    group_by(game_key) %>%
+    summarise(
+      nflfast_game_id = first_non_missing(nflfast_game_id),
+      week_num = suppressWarnings(as.integer(first_non_missing(week_num))),
+      game_type = first_non_missing(game_type),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      week_num = coalesce(week_num, extract_nflfast_week(nflfast_game_id)),
+      game_type = coalesce(game_type, infer_game_type_from_week(week_num))
+    )
+}
+
+build_game_metadata_lookup <- function(week_lookup_path = NULL) {
+  lookup_path <- locate_game_week_lookup_file(week_lookup_path)
+  lookup_tbl <- read_game_metadata_from_file(lookup_path)
+  if (nrow(lookup_tbl) == 0L) {
+    return(tibble())
+  }
+
+  lookup_tbl %>%
+    transmute(
+      game_key,
+      nflfast_game_id,
+      week_num,
+      game_type,
+      metadata_source = "lookup"
+    )
 }
 
 build_game_week_lookup <- function(model_data, week_lookup_path = NULL) {
@@ -659,10 +811,8 @@ build_game_week_lookup <- function(model_data, week_lookup_path = NULL) {
     arrange(first_row, game_id) %>%
     mutate(game_key = as.character(game_id))
 
-  lookup_path <- locate_game_week_lookup_file(week_lookup_path)
-  has_lookup <- !is.na(lookup_path)
-
-  if (!has_lookup) {
+  metadata_tbl <- build_game_metadata_lookup(week_lookup_path)
+  if (nrow(metadata_tbl) == 0L) {
     week_tbl <- games_base %>%
       mutate(
         week_num = row_number(),
@@ -673,44 +823,16 @@ build_game_week_lookup <- function(model_data, week_lookup_path = NULL) {
       select(game_id, first_row, week_num, week_index, week_label, week_source)
     return(week_tbl)
   }
-
-  lookup_raw <- read_csv(lookup_path, show_col_types = FALSE, name_repair = "unique_quiet") %>%
-    drop_index_columns()
-  if (!"game_id" %in% names(lookup_raw)) {
-    warning("Week lookup file has no game_id column (", lookup_path, "); falling back to game sequence.")
-    week_tbl <- games_base %>%
-      mutate(
-        week_num = row_number(),
-        week_index = row_number(),
-        week_label = paste0("G", formatC(week_index, width = 3, flag = "0")),
-        week_source = "game_sequence"
-      ) %>%
-      select(game_id, first_row, week_num, week_index, week_label, week_source)
-    return(week_tbl)
-  }
-
-  lookup_tbl <- lookup_raw %>%
-    mutate(game_key = as.character(game_id))
-
-  week_num_vec <- if ("week" %in% names(lookup_tbl)) {
-    suppressWarnings(as.integer(as.character(lookup_tbl$week)))
-  } else if ("nflfast_game_id" %in% names(lookup_tbl)) {
-    extract_nflfast_week(lookup_tbl$nflfast_game_id)
-  } else {
-    rep(NA_integer_, nrow(lookup_tbl))
-  }
-
-  lookup_tbl <- lookup_tbl %>%
-    mutate(week_num = week_num_vec) %>%
-    group_by(game_key) %>%
-    summarise(week_num = first(week_num[!is.na(week_num)]), .groups = "drop")
 
   merged <- games_base %>%
-    left_join(lookup_tbl, by = "game_key") %>%
+    left_join(
+      metadata_tbl %>% select(game_key, week_num, metadata_source),
+      by = "game_key"
+    ) %>%
     arrange(first_row, game_id)
 
   if (all(is.na(merged$week_num))) {
-    warning("Could not derive week numbers from ", lookup_path, "; falling back to game sequence.")
+    warning("Could not derive week numbers from lookup metadata; falling back to game sequence.")
     week_tbl <- merged %>%
       mutate(
         week_num = row_number(),
@@ -728,7 +850,15 @@ build_game_week_lookup <- function(model_data, week_lookup_path = NULL) {
   }
   missing_idx <- which(is.na(merged$week_num))
   if (length(missing_idx) > 0L) {
+    warning(
+      "Week lookup metadata missing for ",
+      length(missing_idx),
+      " games; assigning sequence weeks after max known week (",
+      as.integer(max_week),
+      ")."
+    )
     merged$week_num[missing_idx] <- as.integer(max_week) + seq_along(missing_idx)
+    merged$metadata_source[missing_idx] <- "sequence_fill"
   }
 
   merged %>%
@@ -736,7 +866,7 @@ build_game_week_lookup <- function(model_data, week_lookup_path = NULL) {
       week_num = as.integer(week_num),
       week_index = dense_rank(week_num),
       week_label = sprintf("%02d", week_num),
-      week_source = "lookup"
+      week_source = coalesce(metadata_source, "lookup")
     ) %>%
     select(game_id, first_row, week_num, week_index, week_label, week_source)
 }
@@ -775,7 +905,6 @@ bootstrap_bt_weekly_path_win <- function(
   include_double_team_local <- isTRUE(bt_cfg$include_double_team)
   standardize_local <- isTRUE(bt_cfg$standardize)
   fixed_lambda_local <- as.numeric(fixed_lambda)
-  rating_scale_local <- as.numeric(bt_cfg$rating_scale)
   target_col_local <- target_col
 
   build_x_fn <- to_sparse_bt_matrix
@@ -822,15 +951,13 @@ bootstrap_bt_weekly_path_win <- function(
       filter(term != "(Intercept)") %>%
       transmute(term = term, term_score = coef) %>%
       build_ratings_fn(
-        rating_scale = rating_scale_local,
         score_col_name = "bt_logit_score",
         source_label = "weekly_cumulative_observed_fit"
       ) %>%
       transmute(
         player_name = player_name,
         role = role,
-        observed_score = bt_logit_score,
-        observed_elo_like = elo_like_score
+        observed_score = bt_logit_score
       )
 
     players_this_week <- model_data %>%
@@ -870,7 +997,6 @@ bootstrap_bt_weekly_path_win <- function(
           filter(term != "(Intercept)") %>%
           transmute(term = term, term_score = coef) %>%
           build_ratings_fn(
-            rating_scale = rating_scale_local,
             score_col_name = "bt_logit_score",
             source_label = "weekly_cumulative_bootstrap_fit"
           ) %>%
@@ -878,7 +1004,6 @@ bootstrap_bt_weekly_path_win <- function(
             player_name = player_name,
             role = role,
             bt_logit_score = bt_logit_score,
-            elo_like_score = elo_like_score,
             iteration = b
           )
       }
@@ -895,8 +1020,6 @@ bootstrap_bt_weekly_path_win <- function(
         q50 = quantile(bt_logit_score, 0.50),
         q75 = quantile(bt_logit_score, 0.75),
         q975 = quantile(bt_logit_score, 0.975),
-        mean_elo_like = mean(elo_like_score),
-        sd_elo_like = sd(elo_like_score),
         n_boot = n(),
         .groups = "drop"
       ) %>%
@@ -915,7 +1038,7 @@ bootstrap_bt_weekly_path_win <- function(
   }
 
   bind_rows(out_list) %>%
-    arrange(week_index, role, desc(mean_elo_like), player_name)
+    arrange(week_index, role, desc(mean_score), player_name)
 }
 
 bootstrap_bt_weekly_path_severity <- function(
@@ -956,7 +1079,6 @@ bootstrap_bt_weekly_path_severity <- function(
   include_double_team_local <- isTRUE(bt_cfg$include_double_team)
   standardize_local <- isTRUE(bt_cfg$standardize)
   fixed_lambda_local <- as.numeric(fixed_lambda)
-  rating_scale_local <- as.numeric(bt_cfg$rating_scale)
   class_weights_local <- bt_cfg$class_weights
   outcome_col_local <- outcome_col
   class_levels_local <- class_levels
@@ -982,7 +1104,6 @@ bootstrap_bt_weekly_path_severity <- function(
       return(
         build_ratings_fn(
           term_scores = zero_term_scores,
-          rating_scale = rating_scale_local,
           score_col_name = "weighted_severity_logit_score",
           source_label = source_label
         )
@@ -1015,7 +1136,6 @@ bootstrap_bt_weekly_path_severity <- function(
       return(
         build_ratings_fn(
           term_scores = zero_term_scores,
-          rating_scale = rating_scale_local,
           score_col_name = "weighted_severity_logit_score",
           source_label = source_label
         )
@@ -1032,7 +1152,6 @@ bootstrap_bt_weekly_path_severity <- function(
 
     build_ratings_fn(
       term_scores = term_scores,
-      rating_scale = rating_scale_local,
       score_col_name = "weighted_severity_logit_score",
       source_label = source_label
     )
@@ -1065,8 +1184,7 @@ bootstrap_bt_weekly_path_severity <- function(
       transmute(
         player_name = player_name,
         role = role,
-        observed_score = weighted_severity_logit_score,
-        observed_elo_like = elo_like_score
+        observed_score = weighted_severity_logit_score
       )
 
     players_this_week <- model_data %>%
@@ -1094,7 +1212,6 @@ bootstrap_bt_weekly_path_severity <- function(
             player_name = player_name,
             role = role,
             weighted_severity_logit_score = weighted_severity_logit_score,
-            elo_like_score = elo_like_score,
             iteration = b
           )
       }
@@ -1111,8 +1228,6 @@ bootstrap_bt_weekly_path_severity <- function(
         q50 = quantile(weighted_severity_logit_score, 0.50),
         q75 = quantile(weighted_severity_logit_score, 0.75),
         q975 = quantile(weighted_severity_logit_score, 0.975),
-        mean_elo_like = mean(elo_like_score),
-        sd_elo_like = sd(elo_like_score),
         n_boot = n(),
         .groups = "drop"
       ) %>%
@@ -1131,7 +1246,7 @@ bootstrap_bt_weekly_path_severity <- function(
   }
 
   bind_rows(out_list) %>%
-    arrange(week_index, role, desc(mean_elo_like), player_name)
+    arrange(week_index, role, desc(mean_score), player_name)
 }
 
 bootstrap_bt_end_to_end_win <- function(
@@ -1165,7 +1280,6 @@ bootstrap_bt_end_to_end_win <- function(
   include_double_team_local <- isTRUE(bt_cfg$include_double_team)
   standardize_local <- isTRUE(bt_cfg$standardize)
   fixed_lambda_local <- as.numeric(fixed_lambda)
-  rating_scale_local <- as.numeric(bt_cfg$rating_scale)
   train_fraction_local <- as.numeric(train_fraction)
   baseline_cfg <- bt_cfg$matchup_baseline
   baseline_method_local <- if (is.null(baseline_cfg$method)) "logit_mean" else baseline_cfg$method
@@ -1256,11 +1370,10 @@ bootstrap_bt_end_to_end_win <- function(
 
       ratings <- build_ratings_fn(
         term_scores = term_scores,
-        rating_scale = rating_scale_local,
         score_col_name = "bt_logit_score",
         source_label = "bootstrap_fixed_lambda_train_fit"
       ) %>%
-        select(player_name, role, bt_logit_score, elo_like_score) %>%
+        select(player_name, role, bt_logit_score) %>%
         mutate(
           iteration = b,
           n_train = nrow(train_df),
@@ -1320,12 +1433,10 @@ bootstrap_bt_end_to_end_win <- function(
       q50 = quantile(bt_logit_score, 0.50),
       q75 = quantile(bt_logit_score, 0.75),
       q975 = quantile(bt_logit_score, 0.975),
-      mean_elo_like = mean(elo_like_score),
-      sd_elo_like = sd(elo_like_score),
       n_boot = n(),
       .groups = "drop"
     ) %>%
-    arrange(desc(mean_elo_like))
+    arrange(desc(mean_score))
 
   list(
     validation_summary = validation_summary,
@@ -1368,7 +1479,6 @@ bootstrap_bt_end_to_end_severity <- function(
   include_double_team_local <- isTRUE(bt_cfg$include_double_team)
   standardize_local <- isTRUE(bt_cfg$standardize)
   fixed_lambda_local <- as.numeric(fixed_lambda)
-  rating_scale_local <- as.numeric(bt_cfg$rating_scale)
   class_weights_local <- bt_cfg$class_weights
   train_fraction_local <- as.numeric(train_fraction)
   target_col_local <- target_col
@@ -1474,11 +1584,10 @@ bootstrap_bt_end_to_end_severity <- function(
 
       ratings <- build_ratings_fn(
         term_scores = term_scores,
-        rating_scale = rating_scale_local,
         score_col_name = "weighted_severity_logit_score",
         source_label = "bootstrap_fixed_lambda_train_fit"
       ) %>%
-        select(player_name, role, weighted_severity_logit_score, elo_like_score) %>%
+        select(player_name, role, weighted_severity_logit_score) %>%
         mutate(
           iteration = b,
           n_train = nrow(train_df),
@@ -1535,12 +1644,10 @@ bootstrap_bt_end_to_end_severity <- function(
       q50 = quantile(weighted_severity_logit_score, 0.50),
       q75 = quantile(weighted_severity_logit_score, 0.75),
       q975 = quantile(weighted_severity_logit_score, 0.975),
-      mean_elo_like = mean(elo_like_score),
-      sd_elo_like = sd(elo_like_score),
       n_boot = n(),
       .groups = "drop"
     ) %>%
-    arrange(desc(mean_elo_like))
+    arrange(desc(mean_score))
 
   list(
     validation_summary = validation_summary,
@@ -1575,7 +1682,6 @@ bootstrap_bt_player_rating_uncertainty_win <- function(model_data, bt_cfg, n_boo
   include_double_team_local <- isTRUE(bt_cfg$include_double_team)
   standardize_local <- isTRUE(bt_cfg$standardize)
   lambda_local <- lambda_choice
-  rating_scale_local <- as.numeric(bt_cfg$rating_scale)
 
   build_x_fn <- to_sparse_bt_matrix
   extract_coef_fn <- extract_glmnet_binomial_coefficients
@@ -1623,11 +1729,10 @@ bootstrap_bt_player_rating_uncertainty_win <- function(model_data, bt_cfg, n_boo
 
       build_ratings_fn(
         term_scores = term_scores,
-        rating_scale = rating_scale_local,
         score_col_name = "bt_logit_score",
         source_label = "bootstrap_fixed_lambda"
       ) %>%
-        select(player_name, role, bt_logit_score, elo_like_score) %>%
+        select(player_name, role, bt_logit_score) %>%
         mutate(iteration = b)
     }
   )
@@ -1642,12 +1747,10 @@ bootstrap_bt_player_rating_uncertainty_win <- function(model_data, bt_cfg, n_boo
       q50 = quantile(bt_logit_score, 0.50),
       q75 = quantile(bt_logit_score, 0.75),
       q975 = quantile(bt_logit_score, 0.975),
-      mean_elo_like = mean(elo_like_score),
-      sd_elo_like = sd(elo_like_score),
       n_boot = n(),
       .groups = "drop"
     ) %>%
-    arrange(desc(mean_elo_like))
+    arrange(desc(mean_score))
 }
 
 bootstrap_bt_player_rating_uncertainty_severity <- function(model_data, bt_cfg, severity_weights, n_boot, seed = 42L, workers = 1L) {
@@ -1682,7 +1785,6 @@ bootstrap_bt_player_rating_uncertainty_severity <- function(model_data, bt_cfg, 
   include_double_team_local <- isTRUE(bt_cfg$include_double_team)
   standardize_local <- isTRUE(bt_cfg$standardize)
   lambda_local <- lambda_choice
-  rating_scale_local <- as.numeric(bt_cfg$rating_scale)
   class_weights_local <- bt_cfg$class_weights
 
   build_x_fn <- to_sparse_bt_matrix
@@ -1738,11 +1840,10 @@ bootstrap_bt_player_rating_uncertainty_severity <- function(model_data, bt_cfg, 
 
       build_ratings_fn(
         term_scores = term_scores,
-        rating_scale = rating_scale_local,
         score_col_name = "weighted_severity_logit_score",
         source_label = "bootstrap_fixed_lambda"
       ) %>%
-        select(player_name, role, weighted_severity_logit_score, elo_like_score) %>%
+        select(player_name, role, weighted_severity_logit_score) %>%
         mutate(iteration = b)
     }
   )
@@ -1757,12 +1858,10 @@ bootstrap_bt_player_rating_uncertainty_severity <- function(model_data, bt_cfg, 
       q50 = quantile(weighted_severity_logit_score, 0.50),
       q75 = quantile(weighted_severity_logit_score, 0.75),
       q975 = quantile(weighted_severity_logit_score, 0.975),
-      mean_elo_like = mean(elo_like_score),
-      sd_elo_like = sd(elo_like_score),
       n_boot = n(),
       .groups = "drop"
     ) %>%
-    arrange(desc(mean_elo_like))
+    arrange(desc(mean_score))
 }
 
 adaptive_k_provisional <- function(n, k_start, k_min, n_provisional, n_decay) {
@@ -2044,6 +2143,177 @@ build_win_baseline_predictions <- function(train_df, test_df, target_col = "win_
     )
 
   out
+}
+
+normalize_severity_reference_class <- function(reference_class, class_levels) {
+  reference_class <- as.character(reference_class)[1]
+  if (!is.character(reference_class) || is.na(reference_class) || !(reference_class %in% class_levels)) {
+    return(class_levels[[1]])
+  }
+  reference_class
+}
+
+combine_multiclass_probabilities_logit_mean <- function(p_left, p_right, reference_index = 1L, eps = 1e-6) {
+  if (!is.matrix(p_left)) p_left <- as.matrix(p_left)
+  if (!is.matrix(p_right)) p_right <- as.matrix(p_right)
+  if (nrow(p_left) != nrow(p_right) || ncol(p_left) != ncol(p_right)) {
+    stop("p_left and p_right must have identical dimensions.")
+  }
+  if (nrow(p_left) == 0L) {
+    return(p_left)
+  }
+
+  normalize_prob <- function(p) {
+    p <- pmax(p, eps)
+    row_totals <- rowSums(p)
+    row_totals[!is.finite(row_totals) | row_totals <= 0] <- 1
+    p / row_totals
+  }
+
+  p_left <- normalize_prob(p_left)
+  p_right <- normalize_prob(p_right)
+
+  eta_left <- log(p_left / p_left[, reference_index])
+  eta_right <- log(p_right / p_right[, reference_index])
+  eta <- 0.5 * (eta_left + eta_right)
+  eta[, reference_index] <- 0
+
+  row_max <- apply(eta, 1, max)
+  exp_eta <- exp(eta - row_max)
+  exp_eta / rowSums(exp_eta)
+}
+
+build_severity_matchup_baseline_predictions <- function(
+  train_df,
+  test_df,
+  target_col = "severity_target",
+  outcome_col = "severity_outcome",
+  class_levels = c("loss", "win", "hit", "sack"),
+  severity_weights = list(loss = 0.0, win = 0.2, hit = 0.4, sack = 1.0),
+  prior_strength = 50,
+  reference_class = "loss"
+) {
+  assert_columns(train_df, c("rusher_name", "blocker_name", target_col, outcome_col), "train_df")
+  assert_columns(test_df, c("rusher_name", "blocker_name"), "test_df")
+
+  class_levels <- as.character(class_levels)
+  if (length(class_levels) < 2L) {
+    stop("class_levels must include at least two classes.")
+  }
+
+  prior_strength <- suppressWarnings(as.numeric(prior_strength))
+  if (is.na(prior_strength) || prior_strength <= 0) {
+    prior_strength <- 50
+  }
+
+  reference_class <- normalize_severity_reference_class(reference_class, class_levels)
+  reference_index <- match(reference_class, class_levels)
+
+  weights_vec <- unlist(severity_weights[class_levels], use.names = FALSE)
+  weights_vec[is.na(weights_vec)] <- 0
+
+  y_train <- factor(train_df[[outcome_col]], levels = class_levels)
+  class_counts <- table(y_train)
+  global_probs <- setNames(rep(0, length(class_levels)), class_levels)
+  global_probs[names(class_counts)] <- as.numeric(class_counts) / max(1, length(y_train))
+  global_scalar <- sum(global_probs * weights_vec)
+
+  build_role_profile <- function(df, id_col, id_name, n_name, prob_prefix) {
+    out <- df %>%
+      transmute(
+        role_id = .data[[id_col]],
+        outcome = factor(.data[[outcome_col]], levels = class_levels)
+      ) %>%
+      count(role_id, outcome, name = "n") %>%
+      tidyr::pivot_wider(names_from = outcome, values_from = n, values_fill = 0)
+
+    for (cls in class_levels) {
+      if (!cls %in% names(out)) {
+        out[[cls]] <- 0
+      }
+    }
+
+    out %>%
+      mutate(
+        n_role = rowSums(across(all_of(class_levels))),
+        across(
+          all_of(class_levels),
+          ~ (.x + prior_strength * global_probs[cur_column()]) / (n_role + prior_strength),
+          .names = paste0(prob_prefix, "{.col}")
+        )
+      ) %>%
+      transmute(
+        !!id_name := role_id,
+        !!n_name := n_role,
+        across(starts_with(prob_prefix))
+      )
+  }
+
+  rusher_tbl <- build_role_profile(
+    df = train_df,
+    id_col = "rusher_name",
+    id_name = "rusher_name",
+    n_name = "n_rusher",
+    prob_prefix = "rusher_prob_"
+  )
+
+  blocker_tbl <- build_role_profile(
+    df = train_df,
+    id_col = "blocker_name",
+    id_name = "blocker_name",
+    n_name = "n_blocker",
+    prob_prefix = "blocker_prob_"
+  )
+
+  out <- test_df %>%
+    select(rusher_name, blocker_name) %>%
+    left_join(rusher_tbl, by = "rusher_name") %>%
+    left_join(blocker_tbl, by = "blocker_name")
+
+  rusher_prob_cols <- paste0("rusher_prob_", class_levels)
+  blocker_prob_cols <- paste0("blocker_prob_", class_levels)
+
+  for (k in seq_along(class_levels)) {
+    cls <- class_levels[[k]]
+    out[[rusher_prob_cols[[k]]]] <- coalesce(out[[rusher_prob_cols[[k]]]], global_probs[[cls]])
+    out[[blocker_prob_cols[[k]]]] <- coalesce(out[[blocker_prob_cols[[k]]]], global_probs[[cls]])
+  }
+
+  p_rusher <- as.matrix(out[, rusher_prob_cols, drop = FALSE])
+  p_blocker <- as.matrix(out[, blocker_prob_cols, drop = FALSE])
+  p_matchup <- combine_multiclass_probabilities_logit_mean(
+    p_left = p_rusher,
+    p_right = p_blocker,
+    reference_index = reference_index
+  )
+  colnames(p_matchup) <- class_levels
+
+  baseline_prob_global_tbl <- as_tibble(
+    matrix(
+      rep(as.numeric(global_probs[class_levels]), each = nrow(out)),
+      ncol = length(class_levels),
+      dimnames = list(NULL, paste0("baseline_prob_", class_levels))
+    ),
+    .name_repair = "minimal"
+  )
+
+  baseline_prob_matchup_tbl <- as_tibble(
+    p_matchup,
+    .name_repair = "minimal"
+  ) %>%
+    rename_with(~ paste0("baseline_matchup_prob_", .x))
+
+  out %>%
+    transmute(
+      baseline_global_prediction = global_scalar,
+      baseline_matchup_prediction = as.numeric(p_matchup %*% weights_vec),
+      baseline_prior_strength = prior_strength,
+      baseline_matchup_method = "multinomial_logit_mean",
+      baseline_reference_class = reference_class,
+      baseline_rusher_train_interactions = coalesce(n_rusher, 0L),
+      baseline_blocker_train_interactions = coalesce(n_blocker, 0L)
+    ) %>%
+    bind_cols(baseline_prob_global_tbl, baseline_prob_matchup_tbl)
 }
 
 compute_win_scalar_metrics <- function(actual, model_pred, baseline_pred) {

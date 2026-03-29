@@ -50,7 +50,6 @@ weighted_term_scores <- severity_weighted_term_scores(
 
 player_ratings <- build_player_ratings_from_term_scores(
   term_scores = weighted_term_scores,
-  rating_scale = bt_cfg$rating_scale,
   score_col_name = "weighted_severity_logit_score",
   source_label = "lambda.min"
 )

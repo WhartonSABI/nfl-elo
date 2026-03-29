@@ -17,6 +17,12 @@ Pipeline output also includes a unified full leaderboard table:
 
 - `data/output/shared/leaderboard_full_bt_ridge.csv`
 
+Pipeline output also includes All-Pro alignment validation tables for BT ratings:
+
+- `data/output/shared/validation_all_pro_player_scores_bt_ridge.csv`
+- `data/output/shared/validation_all_pro_metrics_bt_ridge.csv`
+- `data/output/shared/validation_all_pro_positive_matches_bt_ridge.csv`
+
 Validation uncertainty uses game-level block bootstrap.  
 Severity uncertainty includes both expected-severity metrics (`mse/rmse/mae`) and multiclass logloss.
 
@@ -24,13 +30,14 @@ Severity uncertainty includes both expected-severity metrics (`mse/rmse/mae`) an
 
 ```text
 .
-├── archived/                  # legacy code, outputs, papers, slides, prior data
+├── archived/                  # legacy reference material only (not used by pipeline runtime)
 ├── data/
-│   ├── raw/                   # optional preferred location for raw Hudl files
+│   ├── hudl/                  # required raw Hudl files for input rebuilds
 │   ├── input/
-│   │   ├── results2.csv
+│   │   ├── matchups.csv
 │   │   ├── sacks.csv
-│   │   └── hits.csv
+│   │   ├── hits.csv
+│   │   └── hudl_iq_game_ids.csv
 │   └── output/
 │       ├── shared/
 │       │   └── leaderboard_full_bt_ridge.csv
@@ -48,9 +55,8 @@ Severity uncertainty includes both expected-severity metrics (`mse/rmse/mae`) an
 │   ├── 07_validate-bt-severity-model.R
 │   ├── 08_uncertainty-bt-severity-model.R
 │   ├── 09_build-full-bt-leaderboard.R
-│   ├── 10_run-all.R
-│   ├── 11_fit-regularized-bt-win.R
-│   └── 12_compare-elo-vs-pbwr-win.R
+│   ├── 10_validate-bt-all-pro.R
+│   └── run-all.R
 ├── README.md
 └── .gitignore
 ```
@@ -60,18 +66,15 @@ Severity uncertainty includes both expected-severity metrics (`mse/rmse/mae`) an
 From repository root:
 
 ```bash
-Rscript scripts/10_run-all.R
+Rscript scripts/run-all.R
 ```
-
-Raw data lookup order:
-
-1. `data/raw/`
-2. `archived/data/raw/`
 
 Required raw files:
 
-- `Hudl IQ 2021 NFL freeze frames.csv` (or `Hudl IQ 2021 NFL Events + Freeze Frame.csv`)
-- `Hudl IQ 2021 player roster.csv`
+- `data/hudl/Hudl IQ 2021 NFL freeze frames.csv` (or `data/hudl/Hudl IQ 2021 NFL Events + Freeze Frame.csv`)
+- `data/hudl/Hudl IQ 2021 player roster.csv`
+
+`02_build-modeling-table.R` filters to regular-season games (`game_type == REG`, weeks 1-18) using `data/input/hudl_iq_game_ids.csv`.
 
 ## Parallel Workers
 
@@ -82,7 +85,7 @@ Parallelizable stages use:
 With 16 cores, that resolves to 12 workers. Override explicitly if needed:
 
 ```bash
-PIPELINE_WORKERS=12 Rscript scripts/10_run-all.R
+PIPELINE_WORKERS=12 Rscript scripts/run-all.R
 ```
 
 ## Runtime Controls
@@ -90,19 +93,19 @@ PIPELINE_WORKERS=12 Rscript scripts/10_run-all.R
 Tune end-to-end bootstrap intensity (validation + player uncertainty):
 
 ```bash
-END_TO_END_BOOTSTRAP_ITER=400 Rscript scripts/10_run-all.R
+END_TO_END_BOOTSTRAP_ITER=400 Rscript scripts/run-all.R
 ```
 
 Quick smoke test:
 
 ```bash
-END_TO_END_BOOTSTRAP_ITER=25 PIPELINE_WORKERS=12 Rscript scripts/10_run-all.R
+END_TO_END_BOOTSTRAP_ITER=25 PIPELINE_WORKERS=12 Rscript scripts/run-all.R
 ```
 
 Enable cumulative weekly path uncertainty:
 
 ```bash
-PATH_BOOTSTRAP_ITER=100 PIPELINE_WORKERS=12 Rscript scripts/10_run-all.R
+PATH_BOOTSTRAP_ITER=100 PIPELINE_WORKERS=12 Rscript scripts/run-all.R
 ```
 
 Path uncertainty outputs:
@@ -110,22 +113,22 @@ Path uncertainty outputs:
 - `data/output/win/path_uncertainty_weekly_win_bt_ridge.csv`
 - `data/output/severity/path_uncertainty_weekly_severity_bt_ridge.csv`
 
-`10_run-all.R` now caches preprocessing by default:
+`run-all.R` now caches preprocessing by default:
 
-- it skips `01_build-inputs.R` if `data/input/results2.csv`, `sacks.csv`, and `hits.csv` already exist
+- it skips `01_build-inputs.R` if `data/input/matchups.csv`, `sacks.csv`, `hits.csv`, and `hudl_iq_game_ids.csv` already exist
 - it skips `02_build-modeling-table.R` if `data/output/shared/modeling_table.csv` already exists
 
 Legacy explicit skip flag (still supported):
 
 ```bash
-SKIP_BUILD_INPUTS=1 Rscript scripts/10_run-all.R
+SKIP_BUILD_INPUTS=1 Rscript scripts/run-all.R
 ```
 
 Force rebuild controls:
 
 ```bash
-FORCE_REBUILD_INPUTS=1 Rscript scripts/10_run-all.R
-FORCE_REBUILD_MODELING=1 Rscript scripts/10_run-all.R
+FORCE_REBUILD_INPUTS=1 Rscript scripts/run-all.R
+FORCE_REBUILD_MODELING=1 Rscript scripts/run-all.R
 ```
 
 Lambda grid for BT CV is now explicit and sequence-based (in [`scripts/00_config.R`](/Users/Jonathan/wsabi/lab/projects/nfl-elo/scripts/00_config.R)):
@@ -137,5 +140,5 @@ Lambda grid for BT CV is now explicit and sequence-based (in [`scripts/00_config
 Set the hard win threshold (seconds from snap):
 
 ```bash
-WIN_SECONDS_THRESHOLD=2.5 Rscript scripts/10_run-all.R
+WIN_SECONDS_THRESHOLD=2.5 Rscript scripts/run-all.R
 ```

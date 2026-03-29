@@ -36,7 +36,7 @@ win_ratings_raw <- read_csv(
 )
 assert_columns(
   win_ratings_raw,
-  c("player_name", "role", "bt_logit_score", "elo_like_score", "coefficient_source"),
+  c("player_name", "role", "bt_logit_score", "coefficient_source"),
   "win_bt_player_ratings"
 )
 
@@ -46,7 +46,7 @@ severity_ratings_raw <- read_csv(
 )
 assert_columns(
   severity_ratings_raw,
-  c("player_name", "role", "weighted_severity_logit_score", "elo_like_score", "coefficient_source"),
+  c("player_name", "role", "weighted_severity_logit_score", "coefficient_source"),
   "severity_bt_player_ratings"
 )
 
@@ -55,7 +55,6 @@ win_point_tbl <- win_ratings_raw %>%
     player_name = player_name,
     role = role,
     win_bt_logit_score = bt_logit_score,
-    win_elo_like = elo_like_score,
     win_coefficient_source = coefficient_source
   )
 
@@ -64,7 +63,6 @@ severity_point_tbl <- severity_ratings_raw %>%
     player_name = player_name,
     role = role,
     severity_weighted_logit_score = weighted_severity_logit_score,
-    severity_elo_like = elo_like_score,
     severity_coefficient_source = coefficient_source
   )
 
@@ -78,8 +76,6 @@ empty_win_uncertainty <- tibble(
   win_boot_q50_score = numeric(0),
   win_boot_q75_score = numeric(0),
   win_boot_q975_score = numeric(0),
-  win_boot_mean_elo = numeric(0),
-  win_boot_sd_elo = numeric(0),
   win_boot_n = integer(0),
   win_boot_fixed_lambda = numeric(0),
   win_boot_scope = character(0)
@@ -95,8 +91,6 @@ empty_severity_uncertainty <- tibble(
   severity_boot_q50_score = numeric(0),
   severity_boot_q75_score = numeric(0),
   severity_boot_q975_score = numeric(0),
-  severity_boot_mean_elo = numeric(0),
-  severity_boot_sd_elo = numeric(0),
   severity_boot_n = integer(0),
   severity_boot_fixed_lambda = numeric(0),
   severity_boot_scope = character(0)
@@ -109,7 +103,7 @@ win_uncertainty_tbl <- if (file.exists(PIPELINE_CONFIG$output_paths$win_bt_ratin
   )
   assert_columns(
     win_uncertainty_raw,
-    c("player_name", "role", "mean_score", "sd_score", "q025", "q50", "q975", "mean_elo_like", "sd_elo_like", "n_boot"),
+    c("player_name", "role", "mean_score", "sd_score", "q025", "q50", "q975", "n_boot"),
     "win_bt_rating_uncertainty"
   )
   win_uncertainty_raw %>%
@@ -123,8 +117,6 @@ win_uncertainty_tbl <- if (file.exists(PIPELINE_CONFIG$output_paths$win_bt_ratin
       win_boot_q50_score = q50,
       win_boot_q75_score = if ("q75" %in% names(win_uncertainty_raw)) q75 else NA_real_,
       win_boot_q975_score = q975,
-      win_boot_mean_elo = mean_elo_like,
-      win_boot_sd_elo = sd_elo_like,
       win_boot_n = n_boot,
       win_boot_fixed_lambda = if ("fixed_lambda" %in% names(win_uncertainty_raw)) fixed_lambda else NA_real_,
       win_boot_scope = if ("bootstrap_scope" %in% names(win_uncertainty_raw)) bootstrap_scope else NA_character_
@@ -141,7 +133,7 @@ severity_uncertainty_tbl <- if (file.exists(PIPELINE_CONFIG$output_paths$severit
   )
   assert_columns(
     severity_uncertainty_raw,
-    c("player_name", "role", "mean_score", "sd_score", "q025", "q50", "q975", "mean_elo_like", "sd_elo_like", "n_boot"),
+    c("player_name", "role", "mean_score", "sd_score", "q025", "q50", "q975", "n_boot"),
     "severity_bt_rating_uncertainty"
   )
   severity_uncertainty_raw %>%
@@ -155,8 +147,6 @@ severity_uncertainty_tbl <- if (file.exists(PIPELINE_CONFIG$output_paths$severit
       severity_boot_q50_score = q50,
       severity_boot_q75_score = if ("q75" %in% names(severity_uncertainty_raw)) q75 else NA_real_,
       severity_boot_q975_score = q975,
-      severity_boot_mean_elo = mean_elo_like,
-      severity_boot_sd_elo = sd_elo_like,
       severity_boot_n = n_boot,
       severity_boot_fixed_lambda = if ("fixed_lambda" %in% names(severity_uncertainty_raw)) fixed_lambda else NA_real_,
       severity_boot_scope = if ("bootstrap_scope" %in% names(severity_uncertainty_raw)) bootstrap_scope else NA_character_
@@ -172,13 +162,13 @@ leaderboard <- full_join(win_point_tbl, severity_point_tbl, by = c("player_name"
   left_join(severity_uncertainty_tbl, by = c("player_name", "role")) %>%
   mutate(
     role_interactions = coalesce(role_interactions, 0L),
-    win_rank_overall = if_else(is.na(win_elo_like), NA_integer_, dense_rank(desc(win_elo_like))),
-    severity_rank_overall = if_else(is.na(severity_elo_like), NA_integer_, dense_rank(desc(severity_elo_like)))
+    win_rank_overall = if_else(is.na(win_bt_logit_score), NA_integer_, dense_rank(desc(win_bt_logit_score))),
+    severity_rank_overall = if_else(is.na(severity_weighted_logit_score), NA_integer_, dense_rank(desc(severity_weighted_logit_score)))
   ) %>%
   group_by(role) %>%
   mutate(
-    win_rank_by_role = if_else(is.na(win_elo_like), NA_integer_, dense_rank(desc(win_elo_like))),
-    severity_rank_by_role = if_else(is.na(severity_elo_like), NA_integer_, dense_rank(desc(severity_elo_like)))
+    win_rank_by_role = if_else(is.na(win_bt_logit_score), NA_integer_, dense_rank(desc(win_bt_logit_score))),
+    severity_rank_by_role = if_else(is.na(severity_weighted_logit_score), NA_integer_, dense_rank(desc(severity_weighted_logit_score)))
   ) %>%
   ungroup() %>%
   select(
@@ -187,7 +177,6 @@ leaderboard <- full_join(win_point_tbl, severity_point_tbl, by = c("player_name"
     role_interactions,
     win_rank_by_role,
     win_rank_overall,
-    win_elo_like,
     win_bt_logit_score,
     win_coefficient_source,
     win_boot_mean_score,
@@ -197,14 +186,11 @@ leaderboard <- full_join(win_point_tbl, severity_point_tbl, by = c("player_name"
     win_boot_q50_score,
     win_boot_q75_score,
     win_boot_q975_score,
-    win_boot_mean_elo,
-    win_boot_sd_elo,
     win_boot_n,
     win_boot_fixed_lambda,
     win_boot_scope,
     severity_rank_by_role,
     severity_rank_overall,
-    severity_elo_like,
     severity_weighted_logit_score,
     severity_coefficient_source,
     severity_boot_mean_score,
@@ -214,8 +200,6 @@ leaderboard <- full_join(win_point_tbl, severity_point_tbl, by = c("player_name"
     severity_boot_q50_score,
     severity_boot_q75_score,
     severity_boot_q975_score,
-    severity_boot_mean_elo,
-    severity_boot_sd_elo,
     severity_boot_n,
     severity_boot_fixed_lambda,
     severity_boot_scope

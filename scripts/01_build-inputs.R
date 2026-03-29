@@ -25,7 +25,7 @@ suppressPackageStartupMessages({
   library(tibble)
 })
 
-ensure_directory(dirname(PIPELINE_CONFIG$input_paths$results_table))
+ensure_directory(dirname(PIPELINE_CONFIG$input_paths$matchups_table))
 
 resolve_raw_events_file <- function(config) {
   candidates <- c(
@@ -86,6 +86,13 @@ required_raw_cols <- c(
   "freeze_frame_x",
   "freeze_frame_y"
 )
+optional_raw_cols <- c(
+  "nflfast_game_id",
+  "season",
+  "week",
+  "game_type"
+)
+raw_read_cols <- unique(c(required_raw_cols, optional_raw_cols))
 
 missing_cols <- setdiff(required_raw_cols, raw_header)
 if (length(missing_cols) > 0L) {
@@ -106,19 +113,163 @@ raw_col_types <- cols(
   event_penalty_type = col_character(),
   time_since_snap = col_double(),
   freeze_frame_x = col_double(),
-  freeze_frame_y = col_double()
+  freeze_frame_y = col_double(),
+  nflfast_game_id = col_character(),
+  season = col_integer(),
+  week = col_integer(),
+  game_type = col_character()
 )
 
 message("Reading raw events+freeze-frame table (selected columns only)...")
 raw <- read_csv(
   raw_file,
-  col_select = all_of(required_raw_cols),
+  col_select = any_of(raw_read_cols),
   col_types = raw_col_types,
   n_max = n_max_rows,
   show_col_types = FALSE
 )
 
 message("Raw rows loaded: ", nrow(raw))
+
+extract_nflfast_week_local <- function(nflfast_game_id) {
+  x <- as.character(nflfast_game_id)
+  ok <- grepl("^[0-9]{4}_[0-9]{2}_", x)
+  out <- rep(NA_integer_, length(x))
+  out[ok] <- suppressWarnings(as.integer(sub("^[0-9]{4}_([0-9]{2})_.*$", "\\1", x[ok])))
+  out
+}
+
+first_non_missing <- function(x) {
+  x <- x[!is.na(x)]
+  if (is.character(x)) {
+    x <- x[trimws(x) != ""]
+  }
+  if (length(x) == 0L) {
+    return(NA)
+  }
+  x[[1]]
+}
+
+if ("nflfast_game_id" %in% names(raw)) {
+  raw$nflfast_game_id <- if_else(
+    is.na(raw$nflfast_game_id) | trimws(raw$nflfast_game_id) == "",
+    NA_character_,
+    raw$nflfast_game_id
+  )
+} else {
+  raw$nflfast_game_id <- NA_character_
+}
+
+if (!"week" %in% names(raw)) {
+  raw$week <- NA_integer_
+}
+
+if (!"game_type" %in% names(raw)) {
+  raw$game_type <- NA_character_
+}
+
+if (!"season" %in% names(raw)) {
+  raw$season <- NA_integer_
+}
+
+normalize_game_lookup_tbl <- function(df) {
+  if (is.null(df) || nrow(df) == 0L) {
+    return(tibble(game_id = numeric(), nflfast_game_id = character(), season = integer(), week = integer(), game_type = character()))
+  }
+  df <- drop_index_columns(df)
+  if (!"game_id" %in% names(df)) {
+    return(tibble(game_id = numeric(), nflfast_game_id = character(), season = integer(), week = integer(), game_type = character()))
+  }
+
+  out <- df %>%
+    transmute(
+      game_id = as.numeric(game_id),
+      nflfast_game_id = if ("nflfast_game_id" %in% names(df)) as.character(nflfast_game_id) else NA_character_,
+      season = if ("season" %in% names(df)) suppressWarnings(as.integer(season)) else NA_integer_,
+      week = if ("week" %in% names(df)) suppressWarnings(as.integer(week)) else NA_integer_,
+      game_type = if ("game_type" %in% names(df)) {
+        if_else(is.na(game_type) | trimws(as.character(game_type)) == "", NA_character_, str_to_upper(trimws(as.character(game_type))))
+      } else {
+        NA_character_
+      }
+    ) %>%
+    group_by(game_id) %>%
+    summarise(
+      nflfast_game_id = first_non_missing(nflfast_game_id),
+      season = suppressWarnings(as.integer(first_non_missing(season))),
+      week = suppressWarnings(as.integer(first_non_missing(week))),
+      game_type = first_non_missing(game_type),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      week = coalesce(week, extract_nflfast_week_local(nflfast_game_id)),
+      game_type = case_when(
+        !is.na(game_type) ~ game_type,
+        !is.na(week) & week <= 18L ~ "REG",
+        !is.na(week) & week == 19L ~ "WC",
+        !is.na(week) & week == 20L ~ "DIV",
+        !is.na(week) & week == 21L ~ "CON",
+        !is.na(week) & week == 22L ~ "SB",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    arrange(game_id)
+
+  out
+}
+
+raw_game_lookup <- normalize_game_lookup_tbl(raw)
+lookup_path <- PIPELINE_CONFIG$input_paths$game_lookup_table
+existing_game_lookup <- if (file.exists(lookup_path)) {
+  normalize_game_lookup_tbl(read_csv(lookup_path, show_col_types = FALSE, name_repair = "unique_quiet"))
+} else {
+  normalize_game_lookup_tbl(tibble())
+}
+
+raw_game_ids <- raw_game_lookup %>% distinct(game_id)
+stale_existing_count <- existing_game_lookup %>%
+  anti_join(raw_game_ids, by = "game_id") %>%
+  nrow()
+if (stale_existing_count > 0L) {
+  message("Ignoring stale lookup rows not present in raw HUDL: ", stale_existing_count)
+}
+existing_game_lookup <- existing_game_lookup %>%
+  semi_join(raw_game_ids, by = "game_id")
+
+game_lookup <- raw_game_lookup %>%
+  left_join(existing_game_lookup, by = "game_id", suffix = c("_raw", "_existing")) %>%
+  transmute(
+    game_id = game_id,
+    nflfast_game_id = coalesce(nflfast_game_id_raw, nflfast_game_id_existing),
+    season = coalesce(season_raw, season_existing),
+    week = coalesce(week_raw, week_existing),
+    game_type = coalesce(game_type_raw, game_type_existing)
+  ) %>%
+  mutate(
+    week = coalesce(week, extract_nflfast_week_local(nflfast_game_id)),
+    game_type = case_when(
+      !is.na(game_type) ~ game_type,
+      !is.na(week) & week <= 18L ~ "REG",
+      !is.na(week) & week == 19L ~ "WC",
+      !is.na(week) & week == 20L ~ "DIV",
+      !is.na(week) & week == 21L ~ "CON",
+      !is.na(week) & week == 22L ~ "SB",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  arrange(game_id)
+
+message(
+  "Built game lookup rows: ",
+  nrow(game_lookup),
+  " (missing week: ",
+  sum(is.na(game_lookup$week)),
+  ", missing game_type: ",
+  sum(is.na(game_lookup$game_type)),
+  ", existing lookup rows merged: ",
+  nrow(existing_game_lookup),
+  ")"
+)
 
 raw <- raw %>%
   left_join(
@@ -400,33 +551,65 @@ safe_eval <- function(rusher, blocker, start, end, tracking, game_id, play_id, e
   )
 }
 
-results2 <- pmap_dfr(
-  list(
-    rusher = matchups_eval$rusher_name,
-    blocker = matchups_eval$blocker_name,
-    start = matchups_eval$Engage_start,
-    end = matchups_eval$Engage_end,
-    tracking = matchups_eval$data,
-    game_id = matchups_eval$game_id,
-    play_id = matchups_eval$play_uuid,
-    event_game_index = matchups_eval$event_game_index,
-    double_team = matchups_eval$double_team
-  ),
-  ~safe_eval(
-    rusher = ..1,
-    blocker = ..2,
-    start = ..3,
-    end = ..4,
-    tracking = ..5,
-    game_id = ..6,
-    play_id = ..7,
-    event_game_index = ..8,
-    double_team = ..9,
-    max_seconds = max_win_seconds
-  )
+workers <- PIPELINE_CONFIG$parallel$workers
+matchup_rows <- nrow(matchups_eval)
+chunk_size <- suppressWarnings(as.integer(Sys.getenv("INPUT_MATCHUP_CHUNK_SIZE", unset = "2000")))
+if (is.na(chunk_size) || chunk_size <= 0L) {
+  chunk_size <- 2000L
+}
+
+message(
+  "Running matchup evaluation in parallel with workers=",
+  workers,
+  ", rows=",
+  matchup_rows,
+  ", chunk_size=",
+  chunk_size,
+  "..."
 )
 
-results2 <- results2 %>%
+if (matchup_rows == 0L) {
+  matchups <- tibble(
+    game_id = numeric(0),
+    play_id = character(0),
+    event_game_index = numeric(0),
+    rusher_name = character(0),
+    blocker_name = character(0),
+    beat_time = numeric(0),
+    beat_dist = numeric(0),
+    rusher_won = integer(0),
+    double_team = numeric(0)
+  )
+} else {
+  row_idx <- seq_len(matchup_rows)
+  idx_chunks <- split(row_idx, ceiling(row_idx / chunk_size))
+
+  chunk_results <- parallel_map(
+    iterable = idx_chunks,
+    workers = workers,
+    seed = PIPELINE_CONFIG$uncertainty$seed,
+    worker_fn = function(idx_chunk) {
+      bind_rows(lapply(idx_chunk, function(i) {
+        safe_eval(
+          rusher = matchups_eval$rusher_name[[i]],
+          blocker = matchups_eval$blocker_name[[i]],
+          start = matchups_eval$Engage_start[[i]],
+          end = matchups_eval$Engage_end[[i]],
+          tracking = matchups_eval$data[[i]],
+          game_id = matchups_eval$game_id[[i]],
+          play_id = matchups_eval$play_uuid[[i]],
+          event_game_index = matchups_eval$event_game_index[[i]],
+          double_team = matchups_eval$double_team[[i]],
+          max_seconds = max_win_seconds
+        )
+      }))
+    }
+  )
+
+  matchups <- bind_rows(chunk_results)
+}
+
+matchups <- matchups %>%
   left_join(
     rusher_penalties,
     by = c("game_id", "play_id" = "play_uuid", "rusher_name")
@@ -468,11 +651,13 @@ results2 <- results2 %>%
   )
 
 message("Writing rebuilt inputs to data/input...")
-write_output_csv(results2, PIPELINE_CONFIG$input_paths$results_table)
+write_output_csv(matchups, PIPELINE_CONFIG$input_paths$matchups_table)
 write_output_csv(sacks, PIPELINE_CONFIG$input_paths$sacks_table)
 write_output_csv(hits, PIPELINE_CONFIG$input_paths$hits_table)
+write_output_csv(game_lookup, PIPELINE_CONFIG$input_paths$game_lookup_table)
 
-message("Wrote rebuilt results table: ", PIPELINE_CONFIG$input_paths$results_table)
+message("Wrote rebuilt matchups table: ", PIPELINE_CONFIG$input_paths$matchups_table)
 message("Wrote rebuilt sacks table: ", PIPELINE_CONFIG$input_paths$sacks_table)
 message("Wrote rebuilt hits table: ", PIPELINE_CONFIG$input_paths$hits_table)
-message("Rebuilt win rate (rusher_won == 1): ", round(mean(results2$rusher_won, na.rm = TRUE), 4))
+message("Wrote rebuilt game lookup table: ", PIPELINE_CONFIG$input_paths$game_lookup_table)
+message("Rebuilt win rate (rusher_won == 1): ", round(mean(matchups$rusher_won, na.rm = TRUE), 4))

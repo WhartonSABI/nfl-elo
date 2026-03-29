@@ -40,7 +40,6 @@ player_ratings <- coef_tbl %>%
   filter(term != "(Intercept)") %>%
   transmute(term = term, term_score = coef) %>%
   build_player_ratings_from_term_scores(
-    rating_scale = bt_cfg$rating_scale,
     score_col_name = "bt_logit_score",
     source_label = "lambda.min"
   )

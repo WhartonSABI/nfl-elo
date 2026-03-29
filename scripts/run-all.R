@@ -24,7 +24,12 @@ skip_build_inputs <- as_flag("SKIP_BUILD_INPUTS", FALSE)
 force_rebuild_inputs <- as_flag("FORCE_REBUILD_INPUTS", FALSE)
 force_rebuild_modeling <- as_flag("FORCE_REBUILD_MODELING", FALSE)
 
-input_files <- file.path(project_root, "data", "input", c("results2.csv", "sacks.csv", "hits.csv"))
+input_files <- file.path(
+  project_root,
+  "data",
+  "input",
+  c("matchups.csv", "sacks.csv", "hits.csv", "hudl_iq_game_ids.csv")
+)
 modeling_table_path <- file.path(project_root, "data", "output", "shared", "modeling_table.csv")
 
 inputs_ready <- all(file.exists(input_files))
@@ -59,7 +64,8 @@ pipeline_scripts <- c(
   "06_fit-bt-severity-model.R",
   "07_validate-bt-severity-model.R",
   "08_uncertainty-bt-severity-model.R",
-  "09_build-full-bt-leaderboard.R"
+  "09_build-full-bt-leaderboard.R",
+  "10_validate-bt-all-pro.R"
 )
 
 for (script_name in pipeline_scripts) {

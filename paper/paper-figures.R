@@ -52,8 +52,8 @@ dist_tbl <- leaderboard %>%
   mutate(
     model = recode(
       model,
-      win_bt_logit_score = "Win/Loss BT (Ridge)",
-      severity_weighted_logit_score = "Severity BT (Ridge)"
+      win_bt_logit_score = "Win/Loss",
+      severity_weighted_logit_score = "Severity"
     )
   )
 
