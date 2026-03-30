@@ -69,7 +69,7 @@ p_dist <- ggplot(dist_tbl, aes(x = bt_score, fill = role, color = role)) +
   geom_density(alpha = 0.20, linewidth = 0.8) +
   facet_wrap(~model, ncol = 1, scales = "free_y") +
   labs(
-    x = "Raw BT score",
+    x = "BT score",
     y = "Density",
     fill = "Role",
     color = "Role"
@@ -147,7 +147,7 @@ p_top <- ggplot(top_tbl, aes(y = player_panel, color = role)) +
   facet_wrap(~panel, scales = "free_y", ncol = 2) +
   scale_y_discrete(labels = panel_labels) +
   labs(
-    x = "Raw BT score (point estimate with central 50% bootstrap interval)",
+    x = "BT score",
     y = NULL,
     color = "Role"
   ) +
@@ -208,8 +208,8 @@ p_path_win <- ggplot(path_tbl_win, aes(x = week, y = observed_score, color = pla
   geom_point(size = 1.1, alpha = 0.75) +
   facet_grid(. ~ role, scales = "free_y") +
   labs(
-    x = "Week index (cumulative fit)",
-    y = "Observed raw BT score",
+    x = "Week index",
+    y = "Observed BT score",
     title = "Win/Loss",
     color = "Player",
     fill = "Player"
@@ -245,8 +245,8 @@ p_path_severity <- ggplot(path_tbl_severity, aes(x = week, y = observed_score, c
   geom_point(size = 1.1, alpha = 0.75) +
   facet_grid(. ~ role, scales = "free_y") +
   labs(
-    x = "Week index (cumulative fit)",
-    y = "Observed raw BT score",
+    x = "Week index",
+    y = "Observed BT score",
     title = "Severity",
     color = "Player",
     fill = "Player"
