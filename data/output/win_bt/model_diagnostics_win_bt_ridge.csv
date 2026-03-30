@@ -1,0 +1,2 @@
+train_rows,test_rows,train_win_rate,test_win_rate,lambda_min,lambda_1se,cv_min_cvm,nonzero_terms_lambda_min,nonzero_terms_lambda_1se,prediction_sd_lambda_min,prediction_sd_lambda_1se,rusher_levels,blocker_levels,double_team_logit_effect_lambda_min,double_team_logit_effect_lambda_1se
+75624,18906,0.13515550618851233,0.13043478260869587,3.182246460778499,4.616894745564297,0.7921535470652408,913,913,8.31523934186692e-5,0,598,337,0.0014378314814917522,4.6635300460239214e-39

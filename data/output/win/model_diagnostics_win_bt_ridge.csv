@@ -1,0 +1,2 @@
+rows_fit,train_win_rate,lambda_min,lambda_1se,cv_min_cvm,nonzero_terms_lambda_min,nonzero_terms_lambda_1se,rusher_levels,blocker_levels,double_team_logit_effect_lambda_min
+153138,0.2596873408298491,1.039457465372263e-4,4.186477288289952e-4,1.1313732778270034,969,969,620,348,0.041760095312743856

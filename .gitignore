@@ -2,8 +2,12 @@
 ### FILES & FOLDERS ###
 #######################
 
+# old files
+archived/
+
 # large data files
 data/raw
+data/hudl
 data/processed
 
 # raw figures

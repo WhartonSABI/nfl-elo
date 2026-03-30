@@ -1,0 +1,3 @@
+mode,metric,baseline_name,model_value,baseline_value,improvement,n_rows,coverage,n_test,n_scored,model_name,lambda_min,lambda_1se,baseline_prior_strength,baseline_reference_class
+severity_multiclass,multiclass_logloss,global_class_freq,0.6271744510318841,0.6347266135393594,0.0075521625074753684,30628,1,30628,30628,severity_bt_ridge,1.039457465372263e-4,0.001893698888950361,50,loss
+severity_multiclass,multiclass_logloss,matchup_multinomial_logit_mean,0.6271744510318841,0.628541664662629,0.001367213630744879,30628,1,30628,30628,severity_bt_ridge,1.039457465372263e-4,0.001893698888950361,50,loss
