@@ -2213,7 +2213,7 @@ build_severity_matchup_baseline_predictions <- function(
   target_col = "severity_target",
   outcome_col = "severity_outcome",
   class_levels = c("loss", "win", "hit", "sack"),
-  severity_weights = list(loss = 0.0, win = 0.2, hit = 0.4, sack = 1.0),
+  severity_weights = list(loss = 0.0, win = 0.1, hit = 0.2, sack = 1.0),
   prior_strength = 50,
   reference_class = "loss"
 ) {

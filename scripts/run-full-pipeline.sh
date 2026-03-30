@@ -27,9 +27,9 @@ Options:
   -h, --help     Show this help text.
 
 Environment overrides (all optional):
-  FORCE_REBUILD_INPUTS      default: 1
-  FORCE_REBUILD_MODELING    default: 1
-  END_TO_END_BOOTSTRAP_ITER default: 400
+  FORCE_REBUILD_INPUTS      default: 0
+  FORCE_REBUILD_MODELING    default: 0
+  END_TO_END_BOOTSTRAP_ITER default: 1000
   PATH_BOOTSTRAP_ITER       default: 100
   PIPELINE_WORKERS          default: auto-detected (max(1, cores - 4))
 EOF
@@ -113,13 +113,13 @@ file_exists "${RUN_ALL_SCRIPT}" || fail "Missing pipeline runner: ${RUN_ALL_SCRI
 ensure_required_inputs
 
 if [[ -z "${FORCE_REBUILD_INPUTS:-}" ]]; then
-  export FORCE_REBUILD_INPUTS=1
+  export FORCE_REBUILD_INPUTS=0
 fi
 if [[ -z "${FORCE_REBUILD_MODELING:-}" ]]; then
-  export FORCE_REBUILD_MODELING=1
+  export FORCE_REBUILD_MODELING=0
 fi
 if [[ -z "${END_TO_END_BOOTSTRAP_ITER:-}" ]]; then
-  export END_TO_END_BOOTSTRAP_ITER=400
+  export END_TO_END_BOOTSTRAP_ITER=1000
 fi
 if [[ -z "${PATH_BOOTSTRAP_ITER:-}" ]]; then
   export PATH_BOOTSTRAP_ITER=100

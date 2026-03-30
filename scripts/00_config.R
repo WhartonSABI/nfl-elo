@@ -100,7 +100,7 @@ HUDL_DATA_DIR <- require_hudl_data_dir(PROJECT_ROOT)
 PARALLEL_RESERVED_CORES <- 4L
 PARALLEL_WORKERS <- detect_worker_count(PARALLEL_RESERVED_CORES)
 UNCERTAINTY_SEED <- get_env_int("PIPELINE_SEED", 20260328L)
-VALIDATION_BOOTSTRAP_ITER <- get_env_int("VALIDATION_BOOTSTRAP_ITER", 400L)
+VALIDATION_BOOTSTRAP_ITER <- get_env_int("VALIDATION_BOOTSTRAP_ITER", 1000L)
 RATING_BOOTSTRAP_ITER <- get_env_int("RATING_BOOTSTRAP_ITER", 80L)
 END_TO_END_BOOTSTRAP_ITER <- get_env_int("END_TO_END_BOOTSTRAP_ITER", VALIDATION_BOOTSTRAP_ITER)
 PATH_BOOTSTRAP_ITER <- get_env_int("PATH_BOOTSTRAP_ITER", 0L)
@@ -159,8 +159,8 @@ PIPELINE_CONFIG <- list(
   ),
   severity_weights = list(
     sack = 1.0,
-    hit = 0.4,
-    win = 0.2,
+    hit = 0.2,
+    win = 0.1,
     loss = 0.0
   ),
   uncertainty = list(

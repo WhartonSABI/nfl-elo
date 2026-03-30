@@ -3,7 +3,7 @@
 This repository runs a single pipeline with two separate ridge Bradley-Terry models:
 
 - `win` model: binary `0/1` target from the 2.5-second win logic.
-- `severity` model: multinomial outcome model (`loss/win/hit/sack`) converted to weighted expected severity (`0.0 / 0.2 / 0.4 / 1.0`).
+- `severity` model: multinomial outcome model (`loss/win/hit/sack`) converted to weighted expected severity (`0.0 / 0.1 / 0.2 / 1.0`).
 
 Each model has its own:
 
@@ -69,11 +69,11 @@ From repository root:
 ./scripts/run-full-pipeline.sh
 ```
 
-`run-full-pipeline.sh` pre-checks required input files and applies sane full-run defaults:
+`run-full-pipeline.sh` pre-checks required input files and applies defaults that keep cached rebuild detection enabled:
 
-- `FORCE_REBUILD_INPUTS=1`
-- `FORCE_REBUILD_MODELING=1`
-- `END_TO_END_BOOTSTRAP_ITER=400`
+- `FORCE_REBUILD_INPUTS=0`
+- `FORCE_REBUILD_MODELING=0`
+- `END_TO_END_BOOTSTRAP_ITER=1000`
 - `PATH_BOOTSTRAP_ITER=100`
 - `PIPELINE_WORKERS=max(1, cores - 4)`
 
@@ -113,7 +113,7 @@ PIPELINE_WORKERS=12 Rscript scripts/run-all.R
 Tune end-to-end bootstrap intensity (validation + player uncertainty):
 
 ```bash
-END_TO_END_BOOTSTRAP_ITER=400 Rscript scripts/run-all.R
+END_TO_END_BOOTSTRAP_ITER=1000 Rscript scripts/run-all.R
 ```
 
 Quick smoke test:
