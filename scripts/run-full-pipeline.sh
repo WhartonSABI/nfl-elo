@@ -4,6 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 RUN_ALL_SCRIPT="${PROJECT_ROOT}/scripts/run-all.R"
+PAPER_TABLES_SCRIPT="${PROJECT_ROOT}/jqas/write-paper-tables.R"
+PAPER_FIGURES_SCRIPT="${PROJECT_ROOT}/jqas/paper-figures.R"
 HUDL_DIR="${PROJECT_ROOT}/data/hudl"
 
 CHECK_ONLY=0
@@ -32,6 +34,7 @@ Environment overrides (all optional):
   END_TO_END_BOOTSTRAP_ITER default: 1000
   PATH_BOOTSTRAP_ITER       default: 100
   PIPELINE_WORKERS          default: auto-detected (max(1, cores - 4))
+  REFRESH_PAPER_ARTIFACTS   default: 1 (regenerates jqas figures + table .tex)
 EOF
 }
 
@@ -127,6 +130,9 @@ fi
 if [[ -z "${PIPELINE_WORKERS:-}" ]]; then
   export PIPELINE_WORKERS="$(default_workers)"
 fi
+if [[ -z "${REFRESH_PAPER_ARTIFACTS:-}" ]]; then
+  export REFRESH_PAPER_ARTIFACTS=1
+fi
 
 log "Preflight checks passed."
 log "PROJECT_ROOT=${PROJECT_ROOT}"
@@ -135,6 +141,7 @@ log "FORCE_REBUILD_MODELING=${FORCE_REBUILD_MODELING}"
 log "END_TO_END_BOOTSTRAP_ITER=${END_TO_END_BOOTSTRAP_ITER}"
 log "PATH_BOOTSTRAP_ITER=${PATH_BOOTSTRAP_ITER}"
 log "PIPELINE_WORKERS=${PIPELINE_WORKERS}"
+log "REFRESH_PAPER_ARTIFACTS=${REFRESH_PAPER_ARTIFACTS}"
 
 if ((CHECK_ONLY == 1)); then
   log "Check-only mode requested; exiting without running pipeline."
@@ -144,4 +151,14 @@ fi
 cd "${PROJECT_ROOT}"
 log "Running scripts/run-all.R ..."
 Rscript "${RUN_ALL_SCRIPT}"
+
+if [[ "${REFRESH_PAPER_ARTIFACTS}" == "1" ]]; then
+  file_exists "${PAPER_TABLES_SCRIPT}" || fail "Missing paper table generator: ${PAPER_TABLES_SCRIPT}"
+  file_exists "${PAPER_FIGURES_SCRIPT}" || fail "Missing paper figure generator: ${PAPER_FIGURES_SCRIPT}"
+  log "Regenerating paper tables (.tex fragments) ..."
+  Rscript "${PAPER_TABLES_SCRIPT}"
+  log "Regenerating paper figures ..."
+  Rscript "${PAPER_FIGURES_SCRIPT}"
+fi
+
 log "Pipeline run complete."

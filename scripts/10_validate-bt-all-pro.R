@@ -159,7 +159,7 @@ if (!"role_interactions" %in% names(leaderboard)) {
 modeling_table <- read_modeling_table(PIPELINE_CONFIG)
 assert_columns(
   modeling_table,
-  c("rusher_name", "blocker_name", "win_target"),
+  c("rusher_name", "blocker_name", "win_target", "severity_target"),
   "modeling_table"
 )
 
@@ -224,26 +224,47 @@ bt_player_scores <- leaderboard %>%
   )
 
 baseline_player_scores <- bind_rows(
-  modeling_table %>%
-    group_by(player_name = rusher_name) %>%
-    summarise(
-      role = "Rusher",
-      role_interactions = n(),
-      score = mean(win_target, na.rm = TRUE),
-      .groups = "drop"
-    ),
-  modeling_table %>%
-    group_by(player_name = blocker_name) %>%
-    summarise(
-      role = "Blocker",
-      role_interactions = n(),
-      score = mean(1 - win_target, na.rm = TRUE),
-      .groups = "drop"
-    )
+  bind_rows(
+    modeling_table %>%
+      group_by(player_name = rusher_name) %>%
+      summarise(
+        role = "Rusher",
+        role_interactions = n(),
+        score = mean(win_target, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    modeling_table %>%
+      group_by(player_name = blocker_name) %>%
+      summarise(
+        role = "Blocker",
+        role_interactions = n(),
+        score = mean(1 - win_target, na.rm = TRUE),
+        .groups = "drop"
+      )
+  ) %>%
+    mutate(model_metric = "raw_win_rate"),
+  bind_rows(
+    modeling_table %>%
+      group_by(player_name = rusher_name) %>%
+      summarise(
+        role = "Rusher",
+        role_interactions = n(),
+        score = mean(severity_target, na.rm = TRUE),
+        .groups = "drop"
+      ),
+    modeling_table %>%
+      group_by(player_name = blocker_name) %>%
+      summarise(
+        role = "Blocker",
+        role_interactions = n(),
+        score = mean(1 - severity_target, na.rm = TRUE),
+        .groups = "drop"
+      )
+  ) %>%
+    mutate(model_metric = "raw_severity_ev")
 ) %>%
   mutate(
     model_name = "baseline",
-    model_metric = "raw_win_rate",
     player_name_norm = normalize_player_name(player_name)
   ) %>%
   select(
