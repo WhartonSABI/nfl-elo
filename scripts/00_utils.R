@@ -1484,19 +1484,21 @@ bootstrap_bt_end_to_end_severity <- function(
   target_col_local <- target_col
   outcome_col_local <- outcome_col
   class_levels_local <- class_levels
+  baseline_cfg <- bt_cfg$matchup_baseline
+  baseline_prior_local <- if (is.null(baseline_cfg$prior_strength)) 50 else baseline_cfg$prior_strength
+  baseline_reference_local <- if (is.null(baseline_cfg$reference_class)) "loss" else baseline_cfg$reference_class
 
   split_fn <- split_train_test
   build_x_fn <- to_sparse_bt_matrix
   sample_fn <- sample_game_block_rows
   get_weights_fn <- get_class_observation_weights
   prob_fn <- predict_bt_multinomial_probs
-  expected_fn <- severity_prob_to_expected
-  scalar_metric_fn <- compute_severity_scalar_metrics
   multiclass_metric_fn <- compute_multiclass_logloss_scalar
   extract_coef_fn <- extract_glmnet_multinomial_coefficients
   weighted_scores_fn <- severity_weighted_term_scores
   build_ratings_fn <- build_player_ratings_from_term_scores
   ensure_outcome_fn <- ensure_severity_outcome_column
+  baseline_fn <- build_severity_matchup_baseline_predictions
 
   draws <- parallel_map(
     iterable = seq_len(n_boot),
@@ -1540,38 +1542,56 @@ bootstrap_bt_end_to_end_severity <- function(
         s = fixed_lambda_local,
         class_levels = class_levels_local
       )
-      expected_pred <- expected_fn(prob_tbl, severity_weights)
-      baseline_pred <- mean(train_df[[target_col_local]], na.rm = TRUE)
-
-      scalar_metrics <- scalar_metric_fn(
-        actual = as.numeric(test_df[[target_col_local]]),
-        model_pred = expected_pred,
-        baseline_pred = rep(baseline_pred, nrow(test_df))
+      baseline_tbl <- baseline_fn(
+        train_df = train_df,
+        test_df = test_df,
+        target_col = target_col_local,
+        outcome_col = outcome_col_local,
+        class_levels = class_levels_local,
+        severity_weights = severity_weights,
+        prior_strength = baseline_prior_local,
+        reference_class = baseline_reference_local
       )
 
-      train_class_counts <- table(y_train)
-      baseline_class_prob <- setNames(rep(0, length(class_levels_local)), class_levels_local)
-      baseline_class_prob[names(train_class_counts)] <- as.numeric(train_class_counts) / length(y_train)
-      baseline_prob_tbl <- as_tibble(
-        matrix(
-          rep(as.numeric(baseline_class_prob[class_levels_local]), each = nrow(test_df)),
-          ncol = length(class_levels_local),
-          dimnames = list(NULL, class_levels_local)
-        ),
-        .name_repair = "minimal"
-      )
+      global_prob_cols <- paste0("baseline_prob_", class_levels_local)
+      matchup_prob_cols <- paste0("baseline_matchup_prob_", class_levels_local)
+
+      baseline_global_prob_tbl <- baseline_tbl %>%
+        select(all_of(global_prob_cols))
+      colnames(baseline_global_prob_tbl) <- class_levels_local
+
+      baseline_matchup_prob_tbl <- baseline_tbl %>%
+        select(all_of(matchup_prob_cols))
+      colnames(baseline_matchup_prob_tbl) <- class_levels_local
 
       actual_class <- as.character(test_df[[outcome_col_local]])
       model_ll <- multiclass_metric_fn(actual_class, prob_tbl, class_levels_local)
-      baseline_ll <- multiclass_metric_fn(actual_class, baseline_prob_tbl, class_levels_local)
-      multiclass_metrics <- tibble(
+      baseline_ll_global <- multiclass_metric_fn(actual_class, baseline_global_prob_tbl, class_levels_local)
+      baseline_ll_matchup <- multiclass_metric_fn(actual_class, baseline_matchup_prob_tbl, class_levels_local)
+
+      multiclass_global <- tibble(
         metric = "multiclass_logloss",
         model_value = model_ll,
-        baseline_value = baseline_ll,
-        improvement = baseline_ll - model_ll
+        baseline_value = baseline_ll_global,
+        improvement = baseline_ll_global - model_ll,
+        baseline_name = "global_class_freq",
+        baseline_matchup_method = baseline_tbl$baseline_matchup_method[[1]],
+        baseline_prior_strength = baseline_tbl$baseline_prior_strength[[1]],
+        baseline_reference_class = baseline_tbl$baseline_reference_class[[1]]
       )
 
-      metrics <- bind_rows(scalar_metrics, multiclass_metrics) %>%
+      multiclass_matchup <- tibble(
+        metric = "multiclass_logloss",
+        model_value = model_ll,
+        baseline_value = baseline_ll_matchup,
+        improvement = baseline_ll_matchup - model_ll,
+        baseline_name = paste0("matchup_", baseline_tbl$baseline_matchup_method[[1]]),
+        baseline_matchup_method = baseline_tbl$baseline_matchup_method[[1]],
+        baseline_prior_strength = baseline_tbl$baseline_prior_strength[[1]],
+        baseline_reference_class = baseline_tbl$baseline_reference_class[[1]]
+      )
+
+      metrics <- bind_rows(multiclass_global, multiclass_matchup) %>%
         mutate(
           iteration = b,
           n_train = nrow(train_df),
@@ -1602,8 +1622,8 @@ bootstrap_bt_end_to_end_severity <- function(
   rating_draws <- bind_rows(lapply(draws, function(x) x$ratings))
 
   validation_summary <- metric_draws %>%
-    mutate(mode = if_else(metric == "multiclass_logloss", "severity_multiclass", "severity")) %>%
-    group_by(mode, metric) %>%
+    mutate(mode = "severity_multiclass") %>%
+    group_by(mode, metric, baseline_name, baseline_matchup_method, baseline_prior_strength, baseline_reference_class) %>%
     summarise(
       model_value_mean = mean(model_value),
       baseline_value_mean = mean(baseline_value),
@@ -1621,6 +1641,10 @@ bootstrap_bt_end_to_end_severity <- function(
     select(
       mode,
       metric,
+      baseline_name,
+      baseline_matchup_method,
+      baseline_prior_strength,
+      baseline_reference_class,
       model_value_mean,
       baseline_value_mean,
       improvement_mean,
@@ -2321,17 +2345,14 @@ compute_win_scalar_metrics <- function(actual, model_pred, baseline_pred) {
   model_prob <- pmin(pmax(model_pred, eps), 1 - eps)
   baseline_prob <- pmin(pmax(baseline_pred, eps), 1 - eps)
 
-  model_brier <- mean((model_prob - actual)^2)
-  baseline_brier <- mean((baseline_prob - actual)^2)
-
   model_logloss <- -mean(actual * log(model_prob) + (1 - actual) * log(1 - model_prob))
   baseline_logloss <- -mean(actual * log(baseline_prob) + (1 - actual) * log(1 - baseline_prob))
 
   data.frame(
-    metric = c("brier", "logloss"),
-    model_value = c(model_brier, model_logloss),
-    baseline_value = c(baseline_brier, baseline_logloss),
-    improvement = c(baseline_brier - model_brier, baseline_logloss - model_logloss),
+    metric = "logloss",
+    model_value = model_logloss,
+    baseline_value = baseline_logloss,
+    improvement = baseline_logloss - model_logloss,
     stringsAsFactors = FALSE
   )
 }

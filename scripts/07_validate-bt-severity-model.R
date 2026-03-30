@@ -98,32 +98,6 @@ scored <- test_df %>%
     lambda_1se = severity_fit$lambda_1se
   )
 
-metrics_global <- compute_validation_metrics(
-  scored_df = scored,
-  mode = "severity",
-  baseline_col = "baseline_global_prediction",
-  baseline_name = "global_mean"
-) 
-
-metrics_matchup <- compute_validation_metrics(
-  scored_df = scored,
-  mode = "severity",
-  baseline_col = "baseline_matchup_prediction",
-  baseline_name = "matchup_multinomial_logit_mean"
-)
-
-metrics <- bind_rows(metrics_global, metrics_matchup) %>%
-  mutate(
-    coverage = mean(!is.na(scored$frozen_model_prediction)),
-    n_test = nrow(test_df),
-    n_scored = sum(!is.na(scored$frozen_model_prediction)),
-    model_name = bt_cfg$model_name,
-    lambda_min = severity_fit$lambda_min,
-    lambda_1se = severity_fit$lambda_1se,
-    baseline_prior_strength = as.numeric(baseline_prior_strength),
-    baseline_reference_class = as.character(baseline_reference_class)
-  )
-
 global_prob_cols <- paste0("baseline_prob_", bt_cfg$class_levels)
 matchup_prob_cols <- paste0("baseline_matchup_prob_", bt_cfg$class_levels)
 baseline_global_prob_tbl <- scored %>%
@@ -154,12 +128,17 @@ multiclass_matchup <- compute_multiclass_validation_metrics_from_prob_tbl(
 
 multiclass_metrics <- bind_rows(multiclass_global, multiclass_matchup) %>%
   mutate(
+    coverage = mean(!is.na(scored$frozen_model_prediction)),
+    n_test = nrow(test_df),
+    n_scored = sum(!is.na(scored$frozen_model_prediction)),
     model_name = bt_cfg$model_name,
     lambda_min = severity_fit$lambda_min,
     lambda_1se = severity_fit$lambda_1se,
     baseline_prior_strength = as.numeric(baseline_prior_strength),
     baseline_reference_class = as.character(baseline_reference_class)
   )
+
+metrics <- multiclass_metrics
 
 write_output_csv(scored, PIPELINE_CONFIG$output_paths$severity_bt_holdout_scored)
 write_output_csv(metrics, PIPELINE_CONFIG$output_paths$severity_bt_validation_metrics)

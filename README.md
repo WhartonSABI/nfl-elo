@@ -23,8 +23,7 @@ Pipeline output also includes All-Pro alignment validation tables for BT ratings
 - `data/output/shared/validation_all_pro_metrics_bt_ridge.csv`
 - `data/output/shared/validation_all_pro_positive_matches_bt_ridge.csv`
 
-Validation uncertainty uses game-level block bootstrap.  
-Severity uncertainty includes both expected-severity metrics (`mse/rmse/mae`) and multiclass logloss.
+Validation uncertainty uses game-level block bootstrap with log-loss endpoints (`logloss` for win, `multiclass_logloss` for severity).
 
 ## Current Layout
 
@@ -56,7 +55,8 @@ Severity uncertainty includes both expected-severity metrics (`mse/rmse/mae`) an
 │   ├── 08_uncertainty-bt-severity-model.R
 │   ├── 09_build-full-bt-leaderboard.R
 │   ├── 10_validate-bt-all-pro.R
-│   └── run-all.R
+│   ├── run-all.R
+│   └── run-full-pipeline.sh
 ├── README.md
 └── .gitignore
 ```
@@ -66,15 +66,35 @@ Severity uncertainty includes both expected-severity metrics (`mse/rmse/mae`) an
 From repository root:
 
 ```bash
-Rscript scripts/run-all.R
+./scripts/run-full-pipeline.sh
 ```
 
-Required raw files:
+`run-full-pipeline.sh` pre-checks required input files and applies sane full-run defaults:
+
+- `FORCE_REBUILD_INPUTS=1`
+- `FORCE_REBUILD_MODELING=1`
+- `END_TO_END_BOOTSTRAP_ITER=400`
+- `PATH_BOOTSTRAP_ITER=100`
+- `PIPELINE_WORKERS=max(1, cores - 4)`
+
+Preflight only (no run):
+
+```bash
+./scripts/run-full-pipeline.sh --check-only
+```
+
+Required raw files (checked before run starts):
 
 - `data/hudl/Hudl IQ 2021 NFL freeze frames.csv` (or `data/hudl/Hudl IQ 2021 NFL Events + Freeze Frame.csv`)
 - `data/hudl/Hudl IQ 2021 player roster.csv`
 
 `02_build-modeling-table.R` filters to regular-season games (`game_type == REG`, weeks 1-18) using `data/input/hudl_iq_game_ids.csv`.
+
+Direct script entrypoint (advanced/manual mode):
+
+```bash
+Rscript scripts/run-all.R
+```
 
 ## Parallel Workers
 

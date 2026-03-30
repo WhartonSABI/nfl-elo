@@ -22,7 +22,7 @@ suppressPackageStartupMessages({
   library(scales)
 })
 
-paper_dir <- file.path(project_root, "paper")
+paper_dir <- file.path(project_root, "jqas")
 fig_dir <- paper_dir
 dir.create(fig_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -40,6 +40,14 @@ if (!"severity_boot_q25_score" %in% names(leaderboard)) leaderboard$severity_boo
 if (!"severity_boot_q75_score" %in% names(leaderboard)) leaderboard$severity_boot_q75_score <- NA_real_
 
 theme_set(theme_minimal(base_size = 12))
+
+# Journal-facing export sizes (inches) for consistent raw PNG dimensions.
+fig_dpi <- 600
+fig_width <- 7.8
+fig_height_dist <- 7.2
+fig_height_top <- 8.6
+fig_width_path <- 7.0
+fig_height_path <- 4.2
 
 # Figure 1: BT score distributions by role and model.
 dist_tbl <- leaderboard %>%
@@ -61,21 +69,24 @@ p_dist <- ggplot(dist_tbl, aes(x = bt_score, fill = role, color = role)) +
   geom_density(alpha = 0.20, linewidth = 0.8) +
   facet_wrap(~model, ncol = 1, scales = "free_y") +
   labs(
-    title = "Distribution of Raw BT Ratings",
     x = "Raw BT score",
     y = "Density",
     fill = "Role",
     color = "Role"
   ) +
   scale_fill_manual(values = c(Blocker = "#1f77b4", Rusher = "#d62728")) +
-  scale_color_manual(values = c(Blocker = "#1f77b4", Rusher = "#d62728"))
+  scale_color_manual(values = c(Blocker = "#1f77b4", Rusher = "#d62728")) +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "horizontal"
+  )
 
 ggsave(
   filename = file.path(fig_dir, "bt_rating_distributions.png"),
   plot = p_dist,
-  width = 10.0,
-  height = 7.2,
-  dpi = 300
+  width = fig_width,
+  height = fig_height_dist,
+  dpi = fig_dpi
 )
 
 # Figure 2: Top players by model and role (interaction threshold to reduce noise).
@@ -89,7 +100,7 @@ top_win <- leaderboard %>%
   slice_head(n = top_n) %>%
   ungroup() %>%
   transmute(
-    model = "Win/Loss BT (Ridge)",
+    model = "Win/Loss",
     role,
     player_name,
     role_interactions,
@@ -105,7 +116,7 @@ top_severity <- leaderboard %>%
   slice_head(n = top_n) %>%
   ungroup() %>%
   transmute(
-    model = "Severity BT (Ridge)",
+    model = "Severity",
     role,
     player_name,
     role_interactions,
@@ -136,65 +147,124 @@ p_top <- ggplot(top_tbl, aes(y = player_panel, color = role)) +
   facet_wrap(~panel, scales = "free_y", ncol = 2) +
   scale_y_discrete(labels = panel_labels) +
   labs(
-    title = paste0("Top ", top_n, " Players by Raw BT Score with 50% Bootstrap Intervals"),
-    subtitle = paste0("Minimum ", min_interactions, " interactions per player"),
     x = "Raw BT score (point estimate with central 50% bootstrap interval)",
     y = NULL,
     color = "Role"
   ) +
   scale_color_manual(values = c(Blocker = "#1f77b4", Rusher = "#d62728")) +
   theme(
-    panel.grid.minor.y = element_blank()
+    panel.grid.minor.y = element_blank(),
+    legend.position = "bottom",
+    legend.direction = "horizontal"
   )
 
 ggsave(
   filename = file.path(fig_dir, "bt_top_players_by_role.png"),
   plot = p_top,
-  width = 12.0,
-  height = 8.8,
-  dpi = 300
+  width = fig_width,
+  height = fig_height_top,
+  dpi = fig_dpi
 )
 
-# Figure 3: Weekly path uncertainty for representative players.
-selected_win <- c("Myles Garrett", "Joe Thuney")
-selected_severity <- c("Robert Quinn", "Trent Williams")
+# Figure 3: Weekly path uncertainty for top players by model and role.
+top_n_path <- 3L
 
-path_tbl <- bind_rows(
-  win_path %>%
-    filter(player_name %in% selected_win) %>%
-    mutate(model = "Win/Loss BT (Ridge)"),
-  severity_path %>%
-    filter(player_name %in% selected_severity) %>%
-    mutate(model = "Severity BT (Ridge)")
-) %>%
+selected_win <- leaderboard %>%
+  filter(
+    role_interactions >= min_interactions,
+    !is.na(win_rank_by_role),
+    !is.na(win_bt_logit_score)
+  ) %>%
+  group_by(role) %>%
+  arrange(win_rank_by_role, .by_group = TRUE) %>%
+  slice_head(n = top_n_path) %>%
+  ungroup() %>%
+  transmute(player_name, role)
+
+selected_severity <- leaderboard %>%
+  filter(
+    role_interactions >= min_interactions,
+    !is.na(severity_rank_by_role),
+    !is.na(severity_weighted_logit_score)
+  ) %>%
+  group_by(role) %>%
+  arrange(severity_rank_by_role, .by_group = TRUE) %>%
+  slice_head(n = top_n_path) %>%
+  ungroup() %>%
+  transmute(player_name, role)
+
+path_tbl_win <- win_path %>%
+  inner_join(selected_win, by = c("player_name", "role")) %>%
   mutate(
     week = as.integer(week_index),
     lower_approx95 = mean_score - 1.96 * sd_score,
     upper_approx95 = mean_score + 1.96 * sd_score
   ) %>%
-  arrange(model, role, player_name, week)
+  arrange(role, player_name, week)
 
-p_path <- ggplot(path_tbl, aes(x = week, y = observed_score, color = player_name, fill = player_name)) +
-  geom_ribbon(aes(ymin = lower_approx95, ymax = upper_approx95), alpha = 0.12, color = NA) +
-  geom_line(linewidth = 0.9) +
-  geom_point(size = 1.3, alpha = 0.90) +
-  facet_grid(model ~ role, scales = "free_y") +
+p_path_win <- ggplot(path_tbl_win, aes(x = week, y = observed_score, color = player_name, fill = player_name)) +
+  geom_ribbon(aes(ymin = lower_approx95, ymax = upper_approx95), alpha = 0.06, color = NA, show.legend = FALSE) +
+  geom_line(linewidth = 0.8, alpha = 0.75) +
+  geom_point(size = 1.1, alpha = 0.75) +
+  facet_grid(. ~ role, scales = "free_y") +
   labs(
-    title = "Weekly BT Rating Paths with Bootstrap Uncertainty",
-    subtitle = "Ribbon: mean ± 1.96 SD from cumulative weekly bootstrap",
     x = "Week index (cumulative fit)",
     y = "Observed raw BT score",
+    title = "Win/Loss",
     color = "Player",
     fill = "Player"
   ) +
-  scale_x_continuous(breaks = pretty_breaks(8))
+  scale_x_continuous(breaks = pretty_breaks(8)) +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.box = "vertical",
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
 
 ggsave(
-  filename = file.path(fig_dir, "bt_weekly_path_uncertainty.png"),
-  plot = p_path,
-  width = 12.0,
-  height = 8.0,
-  dpi = 300
+  filename = file.path(fig_dir, "bt_weekly_path_uncertainty_win.png"),
+  plot = p_path_win,
+  width = fig_width_path,
+  height = fig_height_path,
+  dpi = fig_dpi
+)
+
+path_tbl_severity <- severity_path %>%
+  inner_join(selected_severity, by = c("player_name", "role")) %>%
+  mutate(
+    week = as.integer(week_index),
+    lower_approx95 = mean_score - 1.96 * sd_score,
+    upper_approx95 = mean_score + 1.96 * sd_score
+  ) %>%
+  arrange(role, player_name, week)
+
+p_path_severity <- ggplot(path_tbl_severity, aes(x = week, y = observed_score, color = player_name, fill = player_name)) +
+  geom_ribbon(aes(ymin = lower_approx95, ymax = upper_approx95), alpha = 0.06, color = NA, show.legend = FALSE) +
+  geom_line(linewidth = 0.8, alpha = 0.75) +
+  geom_point(size = 1.1, alpha = 0.75) +
+  facet_grid(. ~ role, scales = "free_y") +
+  labs(
+    x = "Week index (cumulative fit)",
+    y = "Observed raw BT score",
+    title = "Severity",
+    color = "Player",
+    fill = "Player"
+  ) +
+  scale_x_continuous(breaks = pretty_breaks(8)) +
+  theme(
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.box = "vertical",
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+ggsave(
+  filename = file.path(fig_dir, "bt_weekly_path_uncertainty_severity.png"),
+  plot = p_path_severity,
+  width = fig_width_path,
+  height = fig_height_path,
+  dpi = fig_dpi
 )
 
 message("Wrote figures to: ", fig_dir)

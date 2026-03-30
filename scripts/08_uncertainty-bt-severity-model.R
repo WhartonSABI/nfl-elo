@@ -28,6 +28,107 @@ modeling_table <- read_modeling_table(PIPELINE_CONFIG) %>%
 workers <- PIPELINE_CONFIG$parallel$workers
 message("Using workers: ", workers, " (n_cores - 4 rule)")
 
+validation_boot_iter <- as.integer(PIPELINE_CONFIG$uncertainty$end_to_end_bootstrap_iterations)
+
+severity_holdout_scored_path <- PIPELINE_CONFIG$output_paths$severity_bt_holdout_scored
+if (!file.exists(severity_holdout_scored_path)) {
+  stop(
+    "Missing severity holdout scored file: ",
+    severity_holdout_scored_path,
+    ". Run scripts/07_validate-bt-severity-model.R first (or run scripts/run-all.R)."
+  )
+}
+
+severity_scored <- read_csv(severity_holdout_scored_path, show_col_types = FALSE)
+class_levels <- PIPELINE_CONFIG$bt_severity_model$class_levels
+baseline_method <- first_non_missing(severity_scored$baseline_matchup_method)
+if (is.na(baseline_method) || baseline_method == "") {
+  baseline_method <- "multinomial_logit_mean"
+}
+baseline_prior <- suppressWarnings(as.numeric(first_non_missing(severity_scored$baseline_prior_strength)))
+if (is.na(baseline_prior) || baseline_prior <= 0) {
+  baseline_prior <- as.numeric(PIPELINE_CONFIG$bt_severity_model$matchup_baseline$prior_strength)
+}
+baseline_reference_class <- first_non_missing(severity_scored$baseline_reference_class)
+if (is.na(baseline_reference_class) || baseline_reference_class == "") {
+  baseline_reference_class <- as.character(PIPELINE_CONFIG$bt_severity_model$matchup_baseline$reference_class)
+}
+
+validation_uncertainty_global <- bootstrap_multiclass_validation_uncertainty(
+  scored_df = severity_scored,
+  class_levels = class_levels,
+  n_boot = validation_boot_iter,
+  seed = PIPELINE_CONFIG$uncertainty$seed,
+  workers = workers,
+  bootstrap_unit = "game",
+  model_prob_prefix = "prob_lambda_min_",
+  baseline_prob_prefix = "baseline_prob_",
+  mode = "severity_multiclass"
+) %>%
+  mutate(
+    baseline_name = "global_class_freq",
+    baseline_matchup_method = baseline_method,
+    baseline_prior_strength = baseline_prior,
+    baseline_reference_class = baseline_reference_class
+  )
+
+validation_uncertainty_matchup <- bootstrap_multiclass_validation_uncertainty(
+  scored_df = severity_scored,
+  class_levels = class_levels,
+  n_boot = validation_boot_iter,
+  seed = PIPELINE_CONFIG$uncertainty$seed + 1000L,
+  workers = workers,
+  bootstrap_unit = "game",
+  model_prob_prefix = "prob_lambda_min_",
+  baseline_prob_prefix = "baseline_matchup_prob_",
+  mode = "severity_multiclass"
+) %>%
+  mutate(
+    baseline_name = paste0("matchup_", baseline_method),
+    baseline_matchup_method = baseline_method,
+    baseline_prior_strength = baseline_prior,
+    baseline_reference_class = baseline_reference_class
+  )
+
+validation_uncertainty <- bind_rows(
+  validation_uncertainty_global,
+  validation_uncertainty_matchup
+) %>%
+  mutate(
+    fixed_lambda = NA_real_,
+    train_rows_mean = NA_real_,
+    test_rows_mean = nrow(severity_scored),
+    bootstrap_scope = "temporal_holdout_game_block"
+  ) %>%
+  select(
+    mode,
+    metric,
+    baseline_name,
+    baseline_matchup_method,
+    baseline_prior_strength,
+    baseline_reference_class,
+    model_value_mean,
+    baseline_value_mean,
+    improvement_mean,
+    improvement_q025,
+    improvement_q25,
+    improvement_q50,
+    improvement_q75,
+    improvement_q975,
+    train_rows_mean,
+    test_rows_mean,
+    iterations,
+    fixed_lambda,
+    bootstrap_scope
+  )
+
+write_output_csv(
+  validation_uncertainty,
+  PIPELINE_CONFIG$output_paths$severity_bt_validation_uncertainty
+)
+
+message("Wrote severity validation uncertainty: ", PIPELINE_CONFIG$output_paths$severity_bt_validation_uncertainty)
+
 severity_artifact <- if (file.exists(PIPELINE_CONFIG$output_paths$severity_model_artifact)) {
   readRDS(PIPELINE_CONFIG$output_paths$severity_model_artifact)
 } else {
@@ -58,16 +159,10 @@ boot_results <- bootstrap_bt_end_to_end_severity(
   severity_weights = PIPELINE_CONFIG$severity_weights,
   fixed_lambda = fixed_lambda,
   train_fraction = PIPELINE_CONFIG$split$train_fraction,
-  n_boot = PIPELINE_CONFIG$uncertainty$end_to_end_bootstrap_iterations,
+  n_boot = validation_boot_iter,
   seed = PIPELINE_CONFIG$uncertainty$seed,
   workers = workers
 )
-
-validation_uncertainty <- boot_results$validation_summary %>%
-  mutate(
-    fixed_lambda = fixed_lambda,
-    bootstrap_scope = "end_to_end"
-  )
 
 rating_uncertainty <- boot_results$rating_summary %>%
   mutate(
@@ -75,13 +170,8 @@ rating_uncertainty <- boot_results$rating_summary %>%
     bootstrap_scope = "train_fit_end_to_end"
   )
 
-write_output_csv(
-  validation_uncertainty,
-  PIPELINE_CONFIG$output_paths$severity_bt_validation_uncertainty
-)
 write_output_csv(rating_uncertainty, PIPELINE_CONFIG$output_paths$severity_bt_rating_uncertainty)
 
-message("Wrote severity validation uncertainty: ", PIPELINE_CONFIG$output_paths$severity_bt_validation_uncertainty)
 message("Wrote severity rating uncertainty: ", PIPELINE_CONFIG$output_paths$severity_bt_rating_uncertainty)
 
 path_boot_iter <- as.integer(PIPELINE_CONFIG$uncertainty$path_bootstrap_iterations)

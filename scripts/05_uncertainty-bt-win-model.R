@@ -24,6 +24,92 @@ modeling_table <- read_modeling_table(PIPELINE_CONFIG) %>%
 workers <- PIPELINE_CONFIG$parallel$workers
 message("Using workers: ", workers, " (n_cores - 4 rule)")
 
+validation_boot_iter <- as.integer(PIPELINE_CONFIG$uncertainty$end_to_end_bootstrap_iterations)
+
+win_holdout_scored_path <- PIPELINE_CONFIG$output_paths$win_bt_holdout_scored
+if (!file.exists(win_holdout_scored_path)) {
+  stop(
+    "Missing win holdout scored file: ",
+    win_holdout_scored_path,
+    ". Run scripts/04_validate-bt-win-model.R first (or run scripts/run-all.R)."
+  )
+}
+
+win_scored <- read_csv(win_holdout_scored_path, show_col_types = FALSE)
+baseline_method <- first_non_missing(win_scored$baseline_matchup_method)
+if (is.na(baseline_method) || baseline_method == "") {
+  baseline_method <- normalize_win_baseline_method(PIPELINE_CONFIG$bt_win_model$matchup_baseline$method)
+}
+baseline_prior <- suppressWarnings(as.numeric(first_non_missing(win_scored$baseline_prior_strength)))
+if (is.na(baseline_prior) || baseline_prior <= 0) {
+  baseline_prior <- as.numeric(PIPELINE_CONFIG$bt_win_model$matchup_baseline$prior_strength)
+}
+
+validation_uncertainty_global <- win_scored %>%
+  mutate(baseline_prediction = baseline_global_prediction) %>%
+  bootstrap_validation_uncertainty(
+    mode = "win",
+    n_boot = validation_boot_iter,
+    seed = PIPELINE_CONFIG$uncertainty$seed,
+    workers = workers,
+    bootstrap_unit = "game"
+  ) %>%
+  mutate(
+    baseline_name = "global_mean",
+    baseline_matchup_method = baseline_method,
+    baseline_prior_strength = baseline_prior
+  )
+
+validation_uncertainty_matchup <- win_scored %>%
+  mutate(baseline_prediction = baseline_matchup_prediction) %>%
+  bootstrap_validation_uncertainty(
+    mode = "win",
+    n_boot = validation_boot_iter,
+    seed = PIPELINE_CONFIG$uncertainty$seed + 1000L,
+    workers = workers,
+    bootstrap_unit = "game"
+  ) %>%
+  mutate(
+    baseline_name = paste0("matchup_", baseline_method),
+    baseline_matchup_method = baseline_method,
+    baseline_prior_strength = baseline_prior
+  )
+
+validation_uncertainty <- bind_rows(
+  validation_uncertainty_global,
+  validation_uncertainty_matchup
+) %>%
+  mutate(
+    fixed_lambda = NA_real_,
+    train_rows_mean = NA_real_,
+    test_rows_mean = nrow(win_scored),
+    bootstrap_scope = "temporal_holdout_game_block"
+  ) %>%
+  select(
+    mode,
+    metric,
+    baseline_name,
+    baseline_matchup_method,
+    baseline_prior_strength,
+    model_value_mean,
+    baseline_value_mean,
+    improvement_mean,
+    improvement_q025,
+    improvement_q25,
+    improvement_q50,
+    improvement_q75,
+    improvement_q975,
+    train_rows_mean,
+    test_rows_mean,
+    iterations,
+    fixed_lambda,
+    bootstrap_scope
+  )
+
+write_output_csv(validation_uncertainty, PIPELINE_CONFIG$output_paths$win_bt_validation_uncertainty)
+
+message("Wrote win validation uncertainty: ", PIPELINE_CONFIG$output_paths$win_bt_validation_uncertainty)
+
 win_artifact <- if (file.exists(PIPELINE_CONFIG$output_paths$win_model_artifact)) {
   readRDS(PIPELINE_CONFIG$output_paths$win_model_artifact)
 } else {
@@ -52,16 +138,10 @@ boot_results <- bootstrap_bt_end_to_end_win(
   bt_cfg = PIPELINE_CONFIG$bt_win_model,
   fixed_lambda = fixed_lambda,
   train_fraction = PIPELINE_CONFIG$split$train_fraction,
-  n_boot = PIPELINE_CONFIG$uncertainty$end_to_end_bootstrap_iterations,
+  n_boot = validation_boot_iter,
   seed = PIPELINE_CONFIG$uncertainty$seed,
   workers = workers
 )
-
-validation_uncertainty <- boot_results$validation_summary %>%
-  mutate(
-    fixed_lambda = fixed_lambda,
-    bootstrap_scope = "end_to_end"
-  )
 
 rating_uncertainty <- boot_results$rating_summary %>%
   mutate(
@@ -69,10 +149,8 @@ rating_uncertainty <- boot_results$rating_summary %>%
     bootstrap_scope = "train_fit_end_to_end"
   )
 
-write_output_csv(validation_uncertainty, PIPELINE_CONFIG$output_paths$win_bt_validation_uncertainty)
 write_output_csv(rating_uncertainty, PIPELINE_CONFIG$output_paths$win_bt_rating_uncertainty)
 
-message("Wrote win validation uncertainty: ", PIPELINE_CONFIG$output_paths$win_bt_validation_uncertainty)
 message("Wrote win rating uncertainty: ", PIPELINE_CONFIG$output_paths$win_bt_rating_uncertainty)
 
 path_boot_iter <- as.integer(PIPELINE_CONFIG$uncertainty$path_bootstrap_iterations)
