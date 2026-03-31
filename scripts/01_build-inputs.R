@@ -347,9 +347,7 @@ tackles_qb <- event_rows %>%
     !is.na(opponent_player_name),
     opponent_player_name %in% qbs
   ) %>%
-  left_join(pass_times, by = "play_uuid") %>%
-  anti_join(sacks %>% select(play_uuid), by = "play_uuid") %>%
-  filter(is.na(pass_time) | time_since_snap < pass_time)
+  anti_join(sacks %>% select(play_uuid), by = "play_uuid")
 
 hits <- tackles_qb %>%
   transmute(
