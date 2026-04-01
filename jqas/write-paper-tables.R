@@ -28,6 +28,7 @@ uncertainty_win_path <- file.path(project_root, "data", "output", "win", "valida
 uncertainty_sev_path <- file.path(project_root, "data", "output", "severity", "validation_uncertainty_severity_bt_ridge.csv")
 allpro_metrics_path <- file.path(project_root, "data", "output", "shared", "validation_all_pro_metrics_bt_ridge.csv")
 leaderboard_path <- file.path(project_root, "data", "output", "shared", "leaderboard_full_bt_ridge.csv")
+prior_sensitivity_path <- file.path(project_root, "data", "output", "shared", "validation_baseline_prior_sensitivity_bt_ridge.csv")
 
 latex_escape <- function(x) {
   x <- as.character(x)
@@ -229,6 +230,34 @@ for (gid in unique(top_tbl$group_id)) {
 write_tex_lines(
   path = file.path(paper_dir, "tab_top5_rows.tex"),
   lines = as_tabular_fragment(top5_lines)
+)
+
+# ------------------------------------------------------------
+# Baseline prior-sensitivity table rows
+# ------------------------------------------------------------
+
+prior_sensitivity <- read_csv(prior_sensitivity_path, show_col_types = FALSE)
+
+prior_sensitivity_rows <- prior_sensitivity %>%
+  mutate(
+    task_label = if_else(task == "win", "Win", "Severity"),
+    sort_task = if_else(task == "win", 1L, 2L)
+  ) %>%
+  arrange(sort_task, prior_strength) %>%
+  transmute(
+    line = paste0(
+      task_label, " & ",
+      as.integer(prior_strength), " & ",
+      fmt_num(model_value, 4), " & ",
+      fmt_num(baseline_value, 4), " & ",
+      fmt_num(improvement, 4)
+    )
+  ) %>%
+  pull(line)
+
+write_tex_lines(
+  path = file.path(paper_dir, "tab_prior_sensitivity_rows.tex"),
+  lines = as_tabular_fragment(prior_sensitivity_rows)
 )
 
 message("Wrote table row fragments to: ", paper_dir)

@@ -65,7 +65,8 @@ pipeline_scripts <- c(
   "07_validate-bt-severity-model.R",
   "08_uncertainty-bt-severity-model.R",
   "09_build-full-bt-leaderboard.R",
-  "10_validate-bt-all-pro.R"
+  "10_validate-bt-all-pro.R",
+  "11_validate-bt-baseline-prior-sensitivity.R"
 )
 
 for (script_name in pipeline_scripts) {

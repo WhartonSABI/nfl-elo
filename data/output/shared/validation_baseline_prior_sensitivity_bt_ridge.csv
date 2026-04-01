@@ -1,0 +1,9 @@
+task,prior_strength,baseline_method,baseline_name,metric,mode,model_value,baseline_value,improvement,n_rows,n_test,baseline_reference_class
+win,10,logit_mean,matchup_logit_mean,logloss,win,0.5567950751318089,0.5581914015092154,0.0013963263774064982,30628,30628,NA
+win,25,logit_mean,matchup_logit_mean,logloss,win,0.5567950751318089,0.5582060501461945,0.0014109750143855848,30628,30628,NA
+win,50,logit_mean,matchup_logit_mean,logloss,win,0.5567950751318089,0.558350062992124,0.001554987860315049,30628,30628,NA
+win,100,logit_mean,matchup_logit_mean,logloss,win,0.5567950751318089,0.5586720033403042,0.0018769282084952765,30628,30628,NA
+severity,10,multinomial_logit_mean,matchup_multinomial_logit_mean,multiclass_logloss,severity_multiclass,0.6318554469306407,0.6338898073699344,0.0020343604392937253,30628,30628,loss
+severity,25,multinomial_logit_mean,matchup_multinomial_logit_mean,multiclass_logloss,severity_multiclass,0.6318554469306407,0.6334175675884309,0.0015621206577902669,30628,30628,loss
+severity,50,multinomial_logit_mean,matchup_multinomial_logit_mean,multiclass_logloss,severity_multiclass,0.6318554469306407,0.6333465291504213,0.0014910822197806706,30628,30628,loss
+severity,100,multinomial_logit_mean,matchup_multinomial_logit_mean,multiclass_logloss,severity_multiclass,0.6318554469306407,0.6335797970754551,0.0017243501448144238,30628,30628,loss

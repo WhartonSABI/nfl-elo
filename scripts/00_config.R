@@ -131,6 +131,7 @@ PIPELINE_CONFIG <- list(
     bt_all_pro_player_scores = file.path(SHARED_OUTPUT_DIR, "validation_all_pro_player_scores_bt_ridge.csv"),
     bt_all_pro_summary_metrics = file.path(SHARED_OUTPUT_DIR, "validation_all_pro_metrics_bt_ridge.csv"),
     bt_all_pro_positive_matches = file.path(SHARED_OUTPUT_DIR, "validation_all_pro_positive_matches_bt_ridge.csv"),
+    bt_baseline_prior_sensitivity = file.path(SHARED_OUTPUT_DIR, "validation_baseline_prior_sensitivity_bt_ridge.csv"),
     win_model_artifact = file.path(WIN_OUTPUT_DIR, "model_win_bt_ridge.rds"),
     win_model_diagnostics = file.path(WIN_OUTPUT_DIR, "model_diagnostics_win_bt_ridge.csv"),
     win_model_coefficients = file.path(WIN_OUTPUT_DIR, "model_coefficients_win_bt_ridge.csv"),
