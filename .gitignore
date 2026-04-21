@@ -19,6 +19,9 @@ figures/
 # literature
 literature/
 
+# submissions
+arxiv.zip
+
 # tex source files
 *.tex
 *.bib
