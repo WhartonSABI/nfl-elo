@@ -1,164 +1,55 @@
-# NFL Pass Rush Ridge Bradley-Terry Pipeline
+# NFL pass protection and pass rush
 
-This repository runs a single pipeline with two separate ridge Bradley-Terry models:
+R code for *Opponent-Adjusted Evaluation of NFL Pass Protection and Pass Rush*. The early model estimates rusher and blocker strength from graded matchups. The final model uses loss, win, recorded pressure, and sack, with EPA coefficients weighting the outcomes.
 
-- `win` model: binary `0/1` target from the 2.5-second win logic.
-- `severity` model: multinomial outcome model (`loss/win/hit/sack`) converted to weighted expected severity (`0.0 / 0.1 / 0.2 / 1.0`).
+## Run
 
-Each model has its own:
+From the repository root, install the packages and place the six licensed inputs in `data/input/` as described in [data/README.md](data/README.md).
 
-- fit stage
-- holdout validation vs its own baseline
-- uncertainty stage (validation metrics + player-rating uncertainty)
-
-Optional path uncertainty is also supported via cumulative week-by-week refits.
-
-Pipeline output also includes a unified full leaderboard table:
-
-- `data/output/shared/leaderboard_full_bt_ridge.csv`
-
-Pipeline output also includes All-Pro alignment validation tables for BT ratings:
-
-- `data/output/shared/validation_all_pro_player_scores_bt_ridge.csv`
-- `data/output/shared/validation_all_pro_metrics_bt_ridge.csv`
-- `data/output/shared/validation_all_pro_positive_matches_bt_ridge.csv`
-
-Validation uncertainty uses game-level block bootstrap with log-loss endpoints (`logloss` for win, `multiclass_logloss` for severity).
-
-## Current Layout
-
-```text
-.
-├── archived/                  # legacy reference material only (not used by pipeline runtime)
-├── data/
-│   ├── hudl/                  # required raw Hudl files for input rebuilds
-│   ├── input/
-│   │   ├── matchups.csv
-│   │   ├── sacks.csv
-│   │   ├── hits.csv
-│   │   └── hudl_iq_game_ids.csv
-│   └── output/
-│       ├── shared/
-│       │   └── leaderboard_full_bt_ridge.csv
-│       ├── win/
-│       └── severity/
-├── scripts/
-│   ├── 00_config.R
-│   ├── 00_utils.R
-│   ├── 01_build-inputs.R
-│   ├── 02_build-modeling-table.R
-│   ├── 03_fit-bt-win-model.R
-│   ├── 04_validate-bt-win-model.R
-│   ├── 05_uncertainty-bt-win-model.R
-│   ├── 06_fit-bt-severity-model.R
-│   ├── 07_validate-bt-severity-model.R
-│   ├── 08_uncertainty-bt-severity-model.R
-│   ├── 09_build-full-bt-leaderboard.R
-│   ├── 10_validate-bt-all-pro.R
-│   ├── run-all.R
-│   └── run-full-pipeline.sh
-├── README.md
-└── .gitignore
+```r
+install.packages(c("Matrix", "glmnet", "data.table", "jsonlite", "ggplot2"))
 ```
 
-## Run The Full Pipeline
+Run the scripts in order, or run the entire analysis:
 
-From repository root:
-
-```bash
-./scripts/run-full-pipeline.sh
+```sh
+Rscript scripts/run_all.R
 ```
 
-`run-full-pipeline.sh` pre-checks required input files and applies defaults that keep cached rebuild detection enabled:
+| Script | Calculation |
+| --- | --- |
+| `00_config.R` | Paths, seed, penalty grid, and bootstrap count |
+| `01_data-engineering.R` | Read matchups, apply independent outcome masks, and construct model inputs |
+| `02_epa-regression.R` | Learn outcome weights from complete plays in Weeks 1–15 |
+| `03_player-models.R` | Fit early and final models with game-grouped cross-validation |
+| `04_validation.R` | Evaluate Weeks 16–18 and calculate calibration summaries |
+| `05_rankings.R` | Player ratings, raw and smoothed comparisons, and All-Pro alignment |
+| `06_bootstrap.R` | Game-bootstrap validation and rating intervals, re-estimating EPA jointly |
+| `07_sensitivity.R` | Baseline smoothing, ordinal outcome model, and EPA specifications |
+| `08_weekly.R` | Cumulative weekly estimates and pointwise intervals |
+| `09_plots.R` | CV, calibration, and weekly plots |
 
-- `FORCE_REBUILD_INPUTS=0`
-- `FORCE_REBUILD_MODELING=0`
-- `END_TO_END_BOOTSTRAP_ITER=1000`
-- `PATH_BOOTSTRAP_ITER=100`
-- `PIPELINE_WORKERS=max(1, cores - 4)`
+For example, `Rscript scripts/04_validation.R` prints the validation table after the first three steps have run. Tables are printed in R and saved as CSV; models and intermediate objects are saved as RDS. Everything generated goes into ignored `results/`. There is no knitting or LaTeX reporting step.
 
-Preflight only (no run):
+Edit `scripts/00_config.R` to change paths or settings. From an R session, settings can also be supplied before sourcing a script:
 
-```bash
-./scripts/run-full-pipeline.sh --check-only
+```r
+options(nfl.settings = list(input_dir = "data/input", output_dir = "results"))
+source("scripts/01_data-engineering.R")
 ```
 
-Required raw files (checked before run starts):
+The full analysis uses 1,000 validation draws, 1,000 rating draws, and 1,000 weekly trajectories and takes substantial compute time. Bootstrap checkpoints resume in the same output directory; use a fresh directory after changing inputs, code, settings, or package versions. Weekly paths keep each full-season fit's penalty and EPA weights. They are retrospective paths, with pointwise intervals.
 
-- `data/hudl/Hudl IQ 2021 NFL freeze frames.csv` (or `data/hudl/Hudl IQ 2021 NFL Events + Freeze Frame.csv`)
-- `data/hudl/Hudl IQ 2021 player roster.csv`
+The published runtime used R 4.4.3, glmnet 5.0, Matrix 1.7.6, data.table 1.18.6.1, jsonlite 2.0.0, and ggplot2 4.0.3. `scripts/functions/` contains the shared fitting and scoring functions.
 
-`02_build-modeling-table.R` filters to regular-season games (`game_type == REG`, weeks 1-18) using `data/input/hudl_iq_game_ids.csv`.
+The models include all observed protectors. Main blocker rankings and All-Pro comparisons use offensive linemen, with rank intervals recomputed within each comparison cohort. The full protector rankings remain available separately.
 
-Direct script entrypoint (advanced/manual mode):
+## Check
 
-```bash
-Rscript scripts/run-all.R
+```sh
+Rscript tests/test-pipeline.R
 ```
 
-## Parallel Workers
+This exercises the full pipeline on synthetic data, including two bootstrap draws, all weekly cutoffs, and checkpoint resumption. It needs no Hudl data.
 
-Parallelizable stages use:
-
-- `workers = max(1, n_cores - 4)`
-
-With 16 cores, that resolves to 12 workers. Override explicitly if needed:
-
-```bash
-PIPELINE_WORKERS=12 Rscript scripts/run-all.R
-```
-
-## Runtime Controls
-
-Tune end-to-end bootstrap intensity (validation + player uncertainty):
-
-```bash
-END_TO_END_BOOTSTRAP_ITER=1000 Rscript scripts/run-all.R
-```
-
-Quick smoke test:
-
-```bash
-END_TO_END_BOOTSTRAP_ITER=25 PIPELINE_WORKERS=12 Rscript scripts/run-all.R
-```
-
-Enable cumulative weekly path uncertainty:
-
-```bash
-PATH_BOOTSTRAP_ITER=100 PIPELINE_WORKERS=12 Rscript scripts/run-all.R
-```
-
-Path uncertainty outputs:
-
-- `data/output/win/path_uncertainty_weekly_win_bt_ridge.csv`
-- `data/output/severity/path_uncertainty_weekly_severity_bt_ridge.csv`
-
-`run-all.R` now caches preprocessing by default:
-
-- it skips `01_build-inputs.R` if `data/input/matchups.csv`, `sacks.csv`, `hits.csv`, and `hudl_iq_game_ids.csv` already exist
-- it skips `02_build-modeling-table.R` if `data/output/shared/modeling_table.csv` already exists
-
-Legacy explicit skip flag (still supported):
-
-```bash
-SKIP_BUILD_INPUTS=1 Rscript scripts/run-all.R
-```
-
-Force rebuild controls:
-
-```bash
-FORCE_REBUILD_INPUTS=1 Rscript scripts/run-all.R
-FORCE_REBUILD_MODELING=1 Rscript scripts/run-all.R
-```
-
-Lambda grid for BT CV is now explicit and sequence-based (in [`scripts/00_config.R`](/Users/Jonathan/wsabi/lab/projects/nfl-elo/scripts/00_config.R)):
-
-- `lambda_grid$scale` = `"log"` or `"linear"`
-- `lambda_grid$max`, `lambda_grid$min`
-- `lambda_grid$length`
-
-Set the hard win threshold (seconds from snap):
-
-```bash
-WIN_SECONDS_THRESHOLD=2.5 Rscript scripts/run-all.R
-```
+Licensed data, results, manuscript materials, historical code, and cluster/publication utilities are ignored. Existing Git history contains older derived data; share a clean source snapshot rather than that history.
