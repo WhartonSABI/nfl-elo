@@ -673,7 +673,7 @@ baseline_analysis <- function(s) {
         players[[paste0(model, "_interactions")]] <- z$interactions[idx]
         players[[paste0(model, "_games")]] <- z$games[idx]
         players[[paste0(model, "_allocated_mass")]] <- z$allocated_mass[idx]
-        for (m in c(0, cfg$baseline_strength[[model]], cv[[model]]$selected)) {
+        for (m in unique(c(0, cfg$baseline_strength[[model]], cfg$season_baseline_strength[[model]], cv[[model]]$selected))) {
             z <- profiles[profiles$model == model & profiles$strength == m, ]
             idx <- match(paste(players$role, players$player_key), paste(z$role, z$player_key))
             nm <- paste0("allocated_", if (m == 0)
@@ -690,7 +690,7 @@ baseline_analysis <- function(s) {
     }
     players <- baseline_honors(players, d)
     views <- list(baseline_rank_views(players, c("literal_raw_win", "allocated_raw_win", paste0("allocated_m",
-        cfg$baseline_strength[["win"]], "_win"), "bt_win"), "win_interactions", "binary_methods"), baseline_rank_views(players,
+        cfg$season_baseline_strength[["win"]], "_win"), "bt_win"), "win_interactions", "binary_methods"), baseline_rank_views(players,
         c("literal_raw_win", "bt_win", "bt_severity"), c("win_interactions", "severity_interactions"),
         "binary_and_severity"))
     stability <- list()

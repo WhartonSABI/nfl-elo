@@ -24,12 +24,15 @@ model_config <- function(seed = settings$seed, lambda_min = settings$lambda_min,
        lambda = exp(seq(log(lambda_max), log(lambda_min), length.out = lambda_length)),
        classes = c("loss", "win", "pressure", "sack"),
        severity_weights = c(loss = 0, win = NA_real_, pressure = NA_real_, sack = 1),
+       # Original fixed comparator retained for historical validation outputs.
        baseline_strength = c(win = 25, severity = 50),
+       # Training-CV selections for the published descriptive season comparisons.
+       season_baseline_strength = c(win = 2, severity = 10),
        bootstrap_iterations = as.integer(settings$bootstrap_iterations),
        solver_tolerance = 1e-9, conditional_sack_share = NA_real_)
 }
 
-for (file in c("data", "models", "epa", "bootstrap", "rankings", "sensitivity", "weekly")) {
+for (file in c("data", "models", "epa", "bootstrap", "rankings", "sensitivity", "weekly", "baseline_validation")) {
   source(file.path("scripts/functions", paste0(file, ".R")))
 }
 dir.create(settings$output_dir, recursive = TRUE, showWarnings = FALSE)

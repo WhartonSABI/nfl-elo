@@ -28,6 +28,7 @@ Rscript scripts/run_all.R
 | `07_sensitivity.R` | Baseline smoothing, ordinal outcome model, and EPA specifications |
 | `08_weekly.R` | Cumulative weekly estimates and pointwise intervals |
 | `09_plots.R` | CV, calibration, and weekly plots |
+| `10_baseline_validation.R` | Retune historical-baseline smoothing within saved validation draws, reusing player fits |
 
 For example, `Rscript scripts/04_validation.R` prints the validation table after the first three steps have run. Tables are printed in R and saved as CSV; models and intermediate objects are saved as RDS. Everything generated goes into ignored `results/`. There is no knitting or LaTeX reporting step.
 
@@ -40,6 +41,8 @@ source("scripts/01_data-engineering.R")
 
 The full analysis uses 1,000 validation draws, 1,000 rating draws, and 1,000 weekly trajectories and takes substantial compute time. Bootstrap checkpoints resume in the same output directory; use a fresh directory after changing inputs, code, settings, or package versions. Weekly paths keep each full-season fit's penalty and EPA weights. They are retrospective paths, with pointwise intervals.
 
+Predictive comparison with the tuned historical baseline uses the training-only game folds to select smoothing separately in each saved validation draw. Step 10 evaluates the complete fixed smoothing grid on those same test-game draws and saves paired percentile intervals, selected-strength frequencies, and the tuned point comparison. It repeats no player fitting. The earlier fixed-strength validation outputs remain available. Descriptive season ranking comparisons use smoothing strengths of 2 for early outcomes and 10 for final outcomes, selected by cross-validation on the original Weeks 1–15 sample; these are configured separately from the historical fixed validation comparator.
+
 The published runtime used R 4.4.3, glmnet 5.0, Matrix 1.7.6, data.table 1.18.6.1, jsonlite 2.0.0, and ggplot2 4.0.3. `scripts/functions/` contains the shared fitting and scoring functions.
 
 The models include all observed protectors. Main blocker rankings and All-Pro comparisons use offensive linemen, with rank intervals recomputed within each comparison cohort. The full protector rankings remain available separately.
@@ -48,6 +51,7 @@ The models include all observed protectors. Main blocker rankings and All-Pro co
 
 ```sh
 Rscript tests/test-pipeline.R
+Rscript tests/test-baseline-validation.R
 ```
 
 This exercises the full pipeline on synthetic data, including two bootstrap draws, all weekly cutoffs, and checkpoint resumption. It needs no Hudl data.

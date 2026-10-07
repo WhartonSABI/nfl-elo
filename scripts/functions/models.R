@@ -333,7 +333,7 @@ validation_metrics <- function (fit, train, test, config)
 
 baseline_scores <- function (d, model, vocabulary, config)
 {
-    p <- outcome_profiles(d, model, config, config$baseline_strength[[model]])
+    p <- outcome_profiles(d, model, config, config$season_baseline_strength[[model]])
     out <- list()
     for (role in c("Rusher", "Blocker")) {
         prefix <- tolower(role)
@@ -344,8 +344,8 @@ baseline_scores <- function (d, model, vocabulary, config)
         ok <- !is.na(ii)
         counts[ok, ] <- m[ii[ok], , drop = FALSE]
         raw <- counts/rowSums(counts)
-        smooth <- (counts + matrix(config$baseline_strength[[model]] * p$global, nrow(counts), ncol(counts),
-            byrow = TRUE))/(rowSums(counts) + config$baseline_strength[[model]])
+        smooth <- (counts + matrix(config$season_baseline_strength[[model]] * p$global, nrow(counts), ncol(counts),
+            byrow = TRUE))/(rowSums(counts) + config$season_baseline_strength[[model]])
         weights <- if (model == "win")
             c(0, 1)
         else config$severity_weights

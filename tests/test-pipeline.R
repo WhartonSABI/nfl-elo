@@ -96,6 +96,10 @@ test_pipeline <- function() {
   stopifnot(all(is.finite(scoped$rank_q025)), all(scoped$rank_q025 <= scoped$rank_q975))
   draw_path <- file.path(output, "bootstrap/ratings/0001.rds")
   original_draw <- readRDS(draw_path)
+  tuned <- readRDS(file.path(output, "tuned_baseline_validation.rds"))
+  stopifnot(nrow(tuned$draws) == 52L, all(tuned$summary$n_boot == 2L),
+    tuned$reuse$fitted_models_refit == FALSE,
+    identical(tuned$reuse$fixed_season_ranking_strengths, model_config()$season_baseline_strength))
   source("scripts/06_bootstrap.R")
   stopifnot(identical(original_draw, readRDS(draw_path)))
   stopifnot(length(list.files(file.path(output, "bootstrap/weekly"), pattern = "rds$", recursive = TRUE)) == 36L)
