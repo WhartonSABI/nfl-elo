@@ -56,4 +56,4 @@ Rscript tests/test-baseline-validation.R
 
 This exercises the full pipeline on synthetic data, including two bootstrap draws, all weekly cutoffs, and checkpoint resumption. It needs no Hudl data.
 
-Licensed data, results, manuscript materials, historical code, and cluster/publication utilities are ignored. Existing Git history contains older derived data; share a clean source snapshot rather than that history.
+Licensed data, results, private manuscript materials, historical code, and cluster utilities are ignored. Existing Git history contains older derived data; share a clean source snapshot rather than that history.
